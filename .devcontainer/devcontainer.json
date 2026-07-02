@@ -1,0 +1,53 @@
+{
+  "name": "Rose",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "workspaceFolder": "/workspaces/gemclust",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "installOhMyZsh": true,
+      "username": "automatic",
+      "userUid": "automatic",
+      "userGid": "automatic",
+      "upgradePackages": true
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {},
+    "ghcr.io/siri404/devcontainer-ai-features/gemini-cli:1": {}
+  },
+  "containerUser": "vscode",
+  "runArgs": [
+    "--security-opt=label=disable",
+    "--env-file",
+    "${localWorkspaceFolder}/.devcontainer/.env.auth"
+  ],
+  "containerEnv": {
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+    "GH_GIT_PROTOCOL": "ssh",
+    "LANG": "en_US.UTF-8",
+    "LC_ALL": "en_US.UTF-8",
+    "TZ": "America/Los_Angeles"
+  },
+  "initializeCommand": "cat ~/.seraphine-automation > .devcontainer/.env.auth",
+
+  "updateRemoteUserUID": true,
+  "mounts": [
+    {
+      "source": "${localEnv:HOME}/.ssh",
+      "target": "/home/vscode/.ssh", // Adjust "vscode" to your container's non-root user (e.g., "node", "user")
+      "type": "bind",
+      "options": "readonly" // Optional: makes keys read-only in container
+    },
+    "source=${localEnv:HOME}/.gemini,target=/home/vscode/.gemini,type=bind",
+    "source=/var/run/dbus,target=/var/run/dbus,type=bind",
+    "source=/run/user,target=/run/user,type=bind"
+  ],
+  "postCreateCommand": "./postCreate.sh",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "zsh"
+      }
+    }
+  }
+}
