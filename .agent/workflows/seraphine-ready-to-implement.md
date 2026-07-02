@@ -11,6 +11,7 @@ graph TD
     C --> D[3. Strict Scope Adherence]
     D --> E[4. Branching & PR Review Loop]
     E --> F[5. Auto-Closing & Parent Resolution]
+    F --> G[6. Remove Label]
 ```
 
 ---
@@ -43,3 +44,6 @@ Follow a strict Test-Driven Development (TDD) cycle to ensure absolute correctne
 * **Auto-Close:** Do NOT close the sub-issue manually. The CI/CD pipeline will automatically close the issue once the PR is merged, relying on the `Closes #<ISSUE_NUMBER>` stanza embedded in the Pull Request.
 * **Parent Issue Checking:** Once the child issue is closed, programmatically inspect the parent issue (`[Breakdown]` issue) using the `gh` CLI to check if any other sibling sub-issues remain open.
 * **Closing Parent Issues:** If and only if all sibling sub-issues are closed, proceed to close the parent `[Breakdown]` issue. Once the `[Breakdown]` issue is closed, close the associated `[Implementation Plan]` issue. Once the `[Implementation Plan]` issue is closed, close the original parent issue.
+
+### 6. Remove Label
+* **Action:** As the final step, remove the `rose-ready-to-implement` label from the issue.

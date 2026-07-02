@@ -9,8 +9,8 @@ graph TD
     A[Issue Labeled: rose-needs-deep-research] --> B[1. Search]
     B --> C[2. Synthesize]
     C --> D[3. Comment]
-    D --> E[4. Remove Label]
-    E --> F[5. Create Sub-issue]
+    D --> E[4. Create Sub-issue]
+    E --> F[5. Remove Label]
 ```
 
 ## 📋 Phase Guidelines
@@ -28,12 +28,12 @@ graph TD
 ### 3. Comment
 * **Action:** Post the synthesized summary of your findings as a comment on the parent issue.
 
-### 4. Remove Label
-* **Action:** Remove the `rose-needs-deep-research` label from the issue using the GitHub API or CLI.
-
-### 5. Create Sub-issue
+### 4. Create Sub-issue
 * **Action:** Create a new **native GitHub child sub-issue** to initiate the requirements gathering phase. Ensure the native GitHub sub-issue relationship is established with the parent issue.
 * **Title:** `[Requirements] <Original Issue Title>`
 * **Label:** Add the `rose-needs-requirements` label to the new sub-issue.
 * **Assignee:** Assign the sub-issue to `brotherlogic-automation`.
 * **Body:** Reference the parent issue and the research summary comment.
+
+### 5. Remove Label
+* **Action:** As the final step, remove the `rose-needs-deep-research` label from the issue using the GitHub API or CLI.

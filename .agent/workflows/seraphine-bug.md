@@ -11,6 +11,8 @@ graph TD
     B -->|Complex Bug| D[3. Complex Path: Transition to Requirements]
     C -->|Tests Pass| E[4. Commit, Push & Review]
     C -->|Tests Fail| D
+    E --> F[5. Remove Label]
+    D --> F
 ```
 
 ---
@@ -43,3 +45,6 @@ If the bug is complex or if a simple fix attempt fails verification:
 For successful simple fixes:
 * Commit and push the changes to a separate branch to trigger the build and code review processes.
 * Reference the issue in the commit message (e.g., `Fix: resolve bug issue. Closes #<ISSUE_NUMBER>`) to enable automatic tracking.
+
+### 5. Remove Label
+* **Action:** As the final step, remove the `rose-bug` label from the issue.

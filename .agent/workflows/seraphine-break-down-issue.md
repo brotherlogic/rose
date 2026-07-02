@@ -9,7 +9,8 @@ graph TD
     A[Issue Labeled rose-break-down-issue] --> B[1. Read Context & Parent Issues]
     B --> C[2. Technical Breakdown Analysis]
     C --> D[3. Programmatic Sub-Issue Creation]
-    D --> E[4. Transition & Label Cleanup]
+    D --> E[4. Sub-Issue Creation]
+    E --> F[5. Remove Label]
 ```
 
 ---
@@ -36,7 +37,9 @@ For each identified component, Seraphine programmatically files a new **native G
 * **Sub-Issue Label:** Must be marked with the `rose-ready-to-implement` label.
 * **Assignee:** Must be assigned to `brotherlogic-automation`.
 
-### 4. Transition & Label Cleanup
+### 4. Transition
 Once all component sub-issues are successfully filed:
-* **Remove the Label:** Remove the `rose-break-down-issue` label from the current `[Breakdown]` issue.
 * **Keep Issue Open:** Do **not** close the `[Breakdown]` issue. Keep it open to serve as the overarching coordination point for the child tasks.
+
+### 5. Remove Label
+* **Action:** As the final step, remove the `rose-break-down-issue` label from the current `[Breakdown]` issue.
