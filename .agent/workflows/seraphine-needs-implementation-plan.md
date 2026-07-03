@@ -1,16 +1,17 @@
-# 🛠️ The `rose-needs-implementation-plan` Label Workflow
+# 🛠️ The `seraphine-needs-implementation-plan` Label Workflow
 
-When a sub-issue is labeled with `rose-needs-implementation-plan`, the AI assistant (**Seraphine**) is triggered to formulate a concrete, technical design and step-by-step implementation blueprint before any code changes are made.
+When a sub-issue is labeled with `seraphine-needs-implementation-plan`, the AI assistant (**Seraphine**) is triggered to formulate a concrete, technical design and step-by-step implementation blueprint before any code changes are made.
 
 ## 🔄 Workflow Lifecycle
 
 ```mermaid
 graph TD
-    A[Sub-Issue Labeled rose-needs-implementation-plan] --> B[1. Read Context & Parent PRD]
+    A[Sub-Issue Labeled seraphine-needs-implementation-plan] --> B[1. Read Context & Parent PRD]
     B --> C[2. Perform Pre-Flight Codebase Analysis]
     C --> D[3. Interactive Grilling Session /grill-me]
     D --> E[4. Technical Implementation Plan Formulation]
     E --> F[5. Post Plan & Create Breakdown Sub-Issue]
+    F --> G[6. Remove Label]
 ```
 
 ---
@@ -51,9 +52,11 @@ Once a shared understanding of technical details is reached, Seraphine compiles 
 ### 5. Post Plan & Create Breakdown Sub-Issue
 Seraphine posts the finalized implementation plan to the sub-issue using premium markdown formatting (collapsible `<details>` blocks, interactive task lists `- [ ]`, Mermaid diagrams, and direct file path links).
 * **Action:**
-  1. Remove the `rose-needs-implementation-plan` label from the current `[Implementation Plan]` issue.
-  2. Programmatically create a new **native GitHub sub-issue**:
+  1. Programmatically create a new **native GitHub sub-issue**:
      - **Sub-Issue Title:** `[Breakdown] <Parent Issue Title>`
-     - **Sub-Issue Label:** `rose-break-down-issue`
+     - **Sub-Issue Label:** `seraphine-break-down-issue`
      - **Assignee:** `brotherlogic-automation`
      - **Sub-Issue Description:** A link referencing the `[Implementation Plan]` issue and instructing the agent to begin the issue breakdown. Ensure the native GitHub sub-issue relationship is established with the parent issue.
+
+### 6. Remove Label
+* **Action:** As the final step, remove the `seraphine-needs-implementation-plan` label from the current `[Implementation Plan]` issue.
