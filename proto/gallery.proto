@@ -1,0 +1,18 @@
+syntax = "proto3";
+package gallery;
+option go_package = "github.com/brotherlogic/rose/proto";
+
+message Artwork {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  string theme_id = 4;
+  int64 timestamp = 5; // Original EXIF date or upload date
+  string image_path = 6;
+}
+
+message Theme {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+}
