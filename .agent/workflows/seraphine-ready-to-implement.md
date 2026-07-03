@@ -1,12 +1,12 @@
-# 🛠️ The `rose-ready-to-implement` Label Workflow
+# 🛠️ The `seraphine-ready-to-implement` Label Workflow
 
-When a granular child sub-issue is labeled with `rose-ready-to-implement`, the AI assistant is triggered to execute a disciplined engineering process to implement the specified component slice.
+When a granular child sub-issue is labeled with `seraphine-ready-to-implement`, the AI assistant is triggered to execute a disciplined engineering process to implement the specified component slice.
 
 ## 🔄 Workflow Lifecycle
 
 ```mermaid
 graph TD
-    A[Sub-Issue Labeled rose-ready-to-implement] --> B[1. Context Resolution & Bug Tree Crawling]
+    A[Sub-Issue Labeled seraphine-ready-to-implement] --> B[1. Context Resolution & Bug Tree Crawling]
     B --> C[2. Red-Green TDD Process]
     C --> D[3. Strict Scope Adherence]
     D --> E[4. Branching & PR Review Loop]
@@ -46,4 +46,4 @@ Follow a strict Test-Driven Development (TDD) cycle to ensure absolute correctne
 * **Closing Parent Issues:** If and only if all sibling sub-issues are closed, proceed to close the parent `[Breakdown]` issue. Once the `[Breakdown]` issue is closed, close the associated `[Implementation Plan]` issue. Once the `[Implementation Plan]` issue is closed, close the original parent issue.
 
 ### 6. Remove Label
-* **Action:** As the final step, remove the `rose-ready-to-implement` label from the issue.
+* **Action:** As the final step, remove the `seraphine-ready-to-implement` label from the issue.

@@ -1,12 +1,12 @@
-# 🛠️ The `rose-break-down-issue` Label Workflow
+# 🛠️ The `seraphine-break-down-issue` Label Workflow
 
-When a sub-issue is labeled with `rose-break-down-issue` (typically the `[Breakdown]` sub-issue), the AI assistant (**Seraphine**) is triggered to break the technical implementation plan down into highly granular, junior-engineer-friendly component issues.
+When a sub-issue is labeled with `seraphine-break-down-issue` (typically the `[Breakdown]` sub-issue), the AI assistant (**Seraphine**) is triggered to break the technical implementation plan down into highly granular, junior-engineer-friendly component issues.
 
 ## 🔄 Workflow Lifecycle
 
 ```mermaid
 graph TD
-    A[Issue Labeled rose-break-down-issue] --> B[1. Read Context & Parent Issues]
+    A[Issue Labeled seraphine-break-down-issue] --> B[1. Read Context & Parent Issues]
     B --> C[2. Technical Breakdown Analysis]
     C --> D[3. Programmatic Sub-Issue Creation]
     D --> E[4. Sub-Issue Creation]
@@ -34,7 +34,7 @@ Seraphine analyzes the technical implementation plan proposed in the current iss
 For each identified component, Seraphine programmatically files a new **native GitHub sub-issue** under the current `[Breakdown]` issue.
 * **Sub-Issue Title:** Must use the format `[Sub-Issue] <Action>` (e.g., `[Sub-Issue] Implement pstore serialization for note status`).
 * **Sub-Issue Body:** Sub-issues should stand alone and do not need to include the parent implementation plan. **Explicitly state issue dependencies in the description: if sub-issue X is dependent on sub-issue Y, this relationship must be clearly documented. They must use native GitHub sub-issues to define the parent relationship to the `[Breakdown]` issue.**
-* **Sub-Issue Label:** Must be marked with the `rose-ready-to-implement` label.
+* **Sub-Issue Label:** Must be marked with the `seraphine-ready-to-implement` label.
 * **Assignee:** Must be assigned to `brotherlogic-automation`.
 
 ### 4. Transition
@@ -42,4 +42,4 @@ Once all component sub-issues are successfully filed:
 * **Keep Issue Open:** Do **not** close the `[Breakdown]` issue. Keep it open to serve as the overarching coordination point for the child tasks.
 
 ### 5. Remove Label
-* **Action:** As the final step, remove the `rose-break-down-issue` label from the current `[Breakdown]` issue.
+* **Action:** As the final step, remove the `seraphine-break-down-issue` label from the current `[Breakdown]` issue.

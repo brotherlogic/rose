@@ -1,12 +1,12 @@
-# 🏷️ The `rose-needs-requirements` Label Workflow
+# 🏷️ The `seraphine-needs-requirements` Label Workflow
 
-When a GitHub issue is labeled with `rose-needs-requirements` (or its variant `rose-need-requirements`), the AI assistant (**Seraphine**) is triggered to run a requirements-gathering process. This stage focuses strictly on **what** needs to be built and **why**, avoiding any early technical implementation details.
+When a GitHub issue is labeled with `seraphine-needs-requirements` (or its variant `seraphine-need-requirements`), the AI assistant (**Seraphine**) is triggered to run a requirements-gathering process. This stage focuses strictly on **what** needs to be built and **why**, avoiding any early technical implementation details.
 
 ## 🔄 Workflow Lifecycle
 
 ```mermaid
 graph TD
-    A[Issue Labeled rose-needs-requirements] --> B[1. Request Brief Description]
+    A[Issue Labeled seraphine-needs-requirements] --> B[1. Request Brief Description]
     B --> C[2. Grilling Session /grill-me]
     C --> D[3. Generate PRD & Edge Cases]
     D --> E[4. Post PRD to Parent Issue]
@@ -52,9 +52,9 @@ Once the PRD is complete, the agent must execute the following automated steps o
 1. **Post the PRD:** Render the requirements document beautifully as a comment on the parent GitHub issue.
 2. **Create Sub-Issue:** Programmatically create a **native GitHub sub-issue** to track the subsequent step:
    - **Sub-Issue Title:** `[Implementation Plan] <Parent Issue Title>`
-   - **Sub-Issue Label:** `rose-needs-implementation-plan`
+   - **Sub-Issue Label:** `seraphine-needs-implementation-plan`
    - **Assignee:** `brotherlogic-automation`
    - **Sub-Issue Description:** A link referencing the parent issue and instructing the agent to begin drafting the implementation plan. Ensure the native GitHub sub-issue relationship is established with the parent issue.
 
 ### 5. Remove Label
-* **Action:** As the final step, remove the `rose-needs-requirements` (or `rose-need-requirements`) label from the parent issue to signify completion of the requirements phase.
+* **Action:** As the final step, remove the `seraphine-needs-requirements` (or `seraphine-need-requirements`) label from the parent issue to signify completion of the requirements phase.
