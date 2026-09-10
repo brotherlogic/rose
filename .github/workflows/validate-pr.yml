@@ -1,0 +1,46 @@
+name: Validate PR
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate-container:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build container image locally
+        run: docker build -t rose-gallery-test:${{ github.sha }} .
+
+      - name: Run container detached
+        run: docker run -d --name test-gallery -p 8080:80 rose-gallery-test:${{ github.sha }}
+
+      - name: Polling healthcheck loop
+        run: |
+          SUCCESS=0
+          for i in $(seq 1 15); do
+            echo "Healthcheck attempt $i/15..."
+            if response=$(curl -s -f http://localhost:8080/) && echo "$response" | grep -q "Artist Portfolio"; then
+              echo "Healthcheck passed: returned 200 OK with expected 'Artist Portfolio' content."
+              SUCCESS=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$SUCCESS" -eq 1 ]; then
+            echo "Container healthcheck successful. Stopping and removing container..."
+            docker stop test-gallery
+            docker rm test-gallery
+            exit 0
+          else
+            echo "Container healthcheck timed out or failed! Capturing container logs:"
+            docker logs test-gallery || true
+            echo "Stopping and removing container..."
+            docker stop test-gallery || true
+            docker rm test-gallery || true
+            exit 1
+          fi
