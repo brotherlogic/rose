@@ -35,6 +35,9 @@ func (s *Store) loadSyncState() (map[string]bool, error) {
 }
 
 func (s *Store) saveSyncState(state map[string]bool) error {
+	if err := os.MkdirAll(s.BasePath, 0755); err != nil {
+		return err
+	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -60,6 +63,9 @@ func (s *Store) SaveProcessedPhoto(id string) error {
 }
 
 func (s *Store) WriteArtworkProto(id string, data []byte) error {
+	if err := os.MkdirAll(s.BasePath, 0755); err != nil {
+		return err
+	}
 	filePath := filepath.Join(s.BasePath, id+".proto.bin")
 	return os.WriteFile(filePath, data, 0644)
 }
