@@ -1,0 +1,33 @@
+name: Validate Syncer PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'cmd/syncer/**'
+      - 'internal/**'
+      - 'proto/**'
+      - 'Dockerfile.syncer'
+      - '.github/workflows/validate-syncer-pr.yml'
+
+jobs:
+  validate-syncer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build container image locally
+        run: docker build -f Dockerfile.syncer -t rose-syncer-test:${{ github.sha }} .
+
+      - name: Execute smoke-test run
+        run: |
+          TEST_DIR=$(mktemp -d)
+          chmod 777 "$TEST_DIR"
+          docker run --rm -v "$TEST_DIR:/data" rose-syncer-test:${{ github.sha }} --storage-path /data
+          test -f "$TEST_DIR/.sync-state.json"
+          rm -rf "$TEST_DIR"
