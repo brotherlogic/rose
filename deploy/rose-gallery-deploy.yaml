@@ -1,0 +1,73 @@
+# Specification: Rose Web Gallery Deployment and Service Manifests
+# Reference: brotherlogic/prod#974
+# Parent Rose Specifications: brotherlogic/rose#30, brotherlogic/rose#63, brotherlogic/rose#64, brotherlogic/rose#65
+# Turnup Contract:
+#   Repository: brotherlogic/prod
+#   File Path: projects/rose/deploy.yaml
+#   Components: Namespace (rose), Service (rose-gallery), Deployment (rose-gallery)
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rose
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rose-gallery
+  namespace: rose
+  labels:
+    app: rose-gallery
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+  selector:
+    app: rose-gallery
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rose-gallery
+  namespace: rose
+spec:
+  selector:
+    matchLabels:
+      app: rose-gallery
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: rose-gallery
+    spec:
+      containers:
+        - name: rose-gallery
+          image: ghcr.io/brotherlogic/rose-gallery:0.8.0 # {"$imagepolicy": "flux-system:rose-gallery"}
+          ports:
+            - containerPort: 80
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
