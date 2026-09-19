@@ -1,6 +1,6 @@
 # Specification: Rose Background Syncer CronJob Manifest
 # Reference: brotherlogic/prod#976
-# Parent Rose Specifications: brotherlogic/rose#31, brotherlogic/rose#71, brotherlogic/rose#72, brotherlogic/rose#73
+# Parent Rose Specifications: brotherlogic/rose#31, brotherlogic/rose#71, brotherlogic/rose#72, brotherlogic/rose#73, brotherlogic/rose#75
 # Turnup Contract:
 #   Repository: brotherlogic/prod
 #   File Path: projects/rose/cronjob.yaml
