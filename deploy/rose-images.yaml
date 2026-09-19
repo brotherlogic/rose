@@ -1,0 +1,49 @@
+# Specification: Flux GitOps Image Automation for Rose Web Gallery
+# Reference: brotherlogic/prod#975
+# Parent Rose Specifications: brotherlogic/rose#30, brotherlogic/rose#63, brotherlogic/rose#64, brotherlogic/rose#66
+
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: rose-gallery
+  namespace: flux-system
+spec:
+  image: ghcr.io/brotherlogic/rose-gallery
+  interval: 1m0s
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: rose-gallery
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: rose-gallery
+  policy:
+    semver:
+      range: 0.x.0
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: rose-gallery
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        email: fluxcdbot@users.noreply.github.com
+        name: fluxcdbot
+      messageTemplate: '{{range .Changed.Changes}}{{print .OldValue}} -> {{println .NewValue}}{{end}}'
+    push:
+      branch: main
+  update:
+    path: ./projects/rose/
+    strategy: Setters
