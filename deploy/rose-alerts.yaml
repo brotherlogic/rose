@@ -1,6 +1,6 @@
 # Specification: Prometheus Alerting Rule for Rose Syncer Consecutive Failures
 # Reference: brotherlogic/prod#977
-# Parent Rose Specifications: brotherlogic/rose#31, brotherlogic/rose#71, brotherlogic/rose#72, brotherlogic/rose#74
+# Parent Rose Specifications: brotherlogic/rose#31, brotherlogic/rose#71, brotherlogic/rose#72, brotherlogic/rose#74, brotherlogic/rose#75
 # Turnup Contract:
 #   Repository: brotherlogic/prod
 #   File Path: projects/rose/alerts.yaml
