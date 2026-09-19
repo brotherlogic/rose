@@ -1,0 +1,74 @@
+# Specification: Rose Background Syncer CronJob Manifest
+# Reference: brotherlogic/prod#976
+# Parent Rose Specifications: brotherlogic/rose#31, brotherlogic/rose#71, brotherlogic/rose#72, brotherlogic/rose#73
+# Turnup Contract:
+#   Repository: brotherlogic/prod
+#   File Path: projects/rose/cronjob.yaml
+#   Components: CronJob (rose-syncer) in namespace rose
+#   Entrypoint: /syncer
+#   Environment: STORAGE_PATH=/data, GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/gcp/credentials.json
+#   Volume Mounts: rose-data-pvc -> /data, rose-gcp-sa-secret -> /etc/secrets/gcp/credentials.json (read-only)
+#   Security Context: runAsUser 65532, runAsGroup 65532, fsGroup 65532
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rose-syncer
+  namespace: rose
+  labels:
+    app.kubernetes.io/name: rose-syncer
+    app.kubernetes.io/part-of: rose
+spec:
+  schedule: "0 4 * * *" # Daily at 04:00 UTC (~1-month freshness target)
+  concurrencyPolicy: Forbid # Strictly prevent overlapping runs
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rose-syncer
+        app.kubernetes.io/part-of: rose
+    spec:
+      activeDeadlineSeconds: 72000 # 20-hour maximum execution time-box
+      backoffLimit: 2 # Transient retries within run
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rose-syncer
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+          containers:
+            - name: rose-syncer
+              image: ghcr.io/brotherlogic/rose-syncer:0.5.0 # {"$imagepolicy": "flux-system:rose-syncer"}
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: STORAGE_PATH
+                  value: /data
+                - name: GOOGLE_APPLICATION_CREDENTIALS
+                  value: /etc/secrets/gcp/credentials.json
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              volumeMounts:
+                - name: rose-data
+                  mountPath: /data
+                - name: rose-gcp-sa
+                  mountPath: /etc/secrets/gcp/credentials.json
+                  subPath: credentials.json
+                  readOnly: true
+          volumes:
+            - name: rose-data
+              persistentVolumeClaim:
+                claimName: rose-data-pvc
+            - name: rose-gcp-sa
+              secret:
+                secretName: rose-gcp-sa-secret
