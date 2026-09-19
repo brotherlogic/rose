@@ -1,0 +1,68 @@
+# Specification: Traefik Ingress Routing and cert-manager TLS Certificate for Rose Web Gallery
+# Reference: brotherlogic/prod#975
+# Parent Rose Specifications: brotherlogic/rose#30, brotherlogic/rose#63, brotherlogic/rose#64, brotherlogic/rose#66
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: rose-gallery-tls
+  namespace: rose
+spec:
+  commonName: roseseraphinetucker.com
+  secretName: rose-gallery-tls
+  dnsNames:
+    - roseseraphinetucker.com
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-to-https
+  namespace: rose
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: rose-gallery-http-redirect
+  namespace: rose
+  annotations:
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`roseseraphinetucker.com`)
+      kind: Rule
+      middlewares:
+        - name: redirect-to-https
+      services:
+        - name: rose-gallery
+          namespace: rose
+          port: 80
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: rose-gallery-ingress
+  namespace: rose
+  annotations:
+    kubernetes.io/ingress.class: traefik-external
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`roseseraphinetucker.com`)
+      kind: Rule
+      services:
+        - name: rose-gallery
+          namespace: rose
+          port: 80
+  tls:
+    secretName: rose-gallery-tls
