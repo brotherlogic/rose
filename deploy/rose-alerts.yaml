@@ -1,0 +1,33 @@
+# Specification: Prometheus Alerting Rule for Rose Syncer Consecutive Failures
+# Reference: brotherlogic/prod#977
+# Parent Rose Specifications: brotherlogic/rose#31, brotherlogic/rose#71, brotherlogic/rose#72, brotherlogic/rose#74
+# Turnup Contract:
+#   Repository: brotherlogic/prod
+#   File Path: projects/rose/alerts.yaml
+#   Component: PrometheusRule (rose-syncer-alerts)
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: rose-syncer-alerts
+  namespace: rose
+  labels:
+    role: alert-rules
+    app.kubernetes.io/name: rose-syncer
+    app.kubernetes.io/part-of: rose
+spec:
+  groups:
+    - name: rose-syncer.rules
+      rules:
+        - alert: RoseSyncerPersistentFailures
+          expr: |
+            sum by (cronjob) (
+              increase(kube_job_failed_total{job_name=~"rose-syncer-.*", namespace="rose"}[5d])
+            ) >= 5
+          for: 15m
+          labels:
+            severity: critical
+            team: brotherlogic
+          annotations:
+            summary: "Rose syncer has experienced 5 consecutive failures"
+            description: "The background artwork syncer CronJob 'rose-syncer' in namespace 'rose' has failed 5 consecutive executions. Operator intervention is required to inspect credentials or storage access."
