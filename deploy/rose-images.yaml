@@ -1,6 +1,6 @@
 # Specification: Flux GitOps Image Automation for Rose Web Gallery
 # Reference: brotherlogic/prod#975
-# Parent Rose Specifications: brotherlogic/rose#30, brotherlogic/rose#63, brotherlogic/rose#64, brotherlogic/rose#66
+# Parent Rose Specifications: brotherlogic/rose#30, brotherlogic/rose#63, brotherlogic/rose#64, brotherlogic/rose#66, brotherlogic/rose#67
 
 apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImageRepository
