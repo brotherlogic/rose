@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/brotherlogic/rose/internal/github"
 	"github.com/brotherlogic/rose/internal/photos"
 	"github.com/brotherlogic/rose/internal/storage"
 	gallery "github.com/brotherlogic/rose/proto"
@@ -61,6 +64,41 @@ func (m *mockVisionService) AnalyzeImage(ctx context.Context, img []byte) (strin
 	return "A beautiful sunset", "Landscape", nil
 }
 
+type mockIssueReporter struct {
+	hasActiveIssue bool
+	hasActiveErr   error
+	createErr      error
+
+	hasActiveCalls atomic.Int32
+	createCalls    atomic.Int32
+	lastReport     github.FailureReport
+	lastCtx        context.Context
+	lastCtxErr     error
+	mu             sync.Mutex
+}
+
+func (m *mockIssueReporter) HasActiveFailureIssue(ctx context.Context) (bool, error) {
+	m.hasActiveCalls.Add(1)
+	m.mu.Lock()
+	m.lastCtx = ctx
+	m.lastCtxErr = ctx.Err()
+	m.mu.Unlock()
+	if m.hasActiveErr != nil {
+		return false, m.hasActiveErr
+	}
+	return m.hasActiveIssue, nil
+}
+
+func (m *mockIssueReporter) CreateFailureIssue(ctx context.Context, report github.FailureReport) error {
+	m.createCalls.Add(1)
+	m.mu.Lock()
+	m.lastCtx = ctx
+	m.lastCtxErr = ctx.Err()
+	m.lastReport = report
+	m.mu.Unlock()
+	return m.createErr
+}
+
 func TestFullSyncPass(t *testing.T) {
 	tempDir := t.TempDir()
 	store := storage.NewStore(tempDir)
@@ -78,7 +116,7 @@ func TestFullSyncPass(t *testing.T) {
 	}
 
 	albumURL := "https://photos.app.goo.gl/samplealbum"
-	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store)
+	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, nil)
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
@@ -160,7 +198,7 @@ func TestIdempotency(t *testing.T) {
 	albumURL := "https://photos.app.goo.gl/samplealbum"
 
 	// First pass
-	code1 := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store)
+	code1 := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, nil)
 	if code1 != 0 {
 		t.Fatalf("first pass failed with exit code %d", code1)
 	}
@@ -169,7 +207,7 @@ func TestIdempotency(t *testing.T) {
 	}
 
 	// Second pass
-	code2 := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store)
+	code2 := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, nil)
 	if code2 != 0 {
 		t.Fatalf("second pass failed with exit code %d", code2)
 	}
@@ -203,7 +241,7 @@ func TestErrorContinuation(t *testing.T) {
 	}
 
 	albumURL := "https://photos.app.goo.gl/samplealbum"
-	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store)
+	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, nil)
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1 due to partial failure, got %d", exitCode)
 	}
@@ -251,7 +289,7 @@ func TestImmediateAbortOnRateLimit(t *testing.T) {
 		}
 		visionSvc := &mockVisionService{}
 
-		code := Run(context.Background(), "https://photos.app.goo.gl/samplealbum", tempDir, photoSvc, visionSvc, store)
+		code := Run(context.Background(), "https://photos.app.goo.gl/samplealbum", tempDir, photoSvc, visionSvc, store, nil)
 		if code != 1 {
 			t.Errorf("expected exit code 1 on fetch rate limit, got %d", code)
 		}
@@ -270,7 +308,7 @@ func TestImmediateAbortOnRateLimit(t *testing.T) {
 		}
 		visionSvc := &mockVisionService{}
 
-		code := Run(context.Background(), "https://photos.app.goo.gl/samplealbum", tempDir, photoSvc, visionSvc, store)
+		code := Run(context.Background(), "https://photos.app.goo.gl/samplealbum", tempDir, photoSvc, visionSvc, store, nil)
 		if code != 1 {
 			t.Errorf("expected exit code 1 on download rate limit abort, got %d", code)
 		}
@@ -294,7 +332,7 @@ func TestImmediateAbortOnRateLimit(t *testing.T) {
 		photoSvc := &mockPhotoService{photos: photoList}
 		visionSvc := &mockVisionService{}
 
-		code := Run(context.Background(), "https://photos.app.goo.gl/samplealbum", tempDir, photoSvc, visionSvc, store)
+		code := Run(context.Background(), "https://photos.app.goo.gl/samplealbum", tempDir, photoSvc, visionSvc, store, nil)
 		if code != 1 {
 			t.Errorf("expected exit code 1 on disk write error abort, got %d", code)
 		}
@@ -316,7 +354,7 @@ func TestExitCodes(t *testing.T) {
 		photoSvc := &mockPhotoService{photos: []photos.Photo{}}
 		visionSvc := &mockVisionService{}
 
-		code := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store)
+		code := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, nil)
 		if code != 0 {
 			t.Errorf("expected exit code 0 for empty photo list, got %d", code)
 		}
@@ -328,7 +366,7 @@ func TestExitCodes(t *testing.T) {
 		photoSvc := &mockPhotoService{fetchErr: errors.New("network failure")}
 		visionSvc := &mockVisionService{}
 
-		code := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store)
+		code := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, nil)
 		if code != 1 {
 			t.Errorf("expected exit code 1 for fetch error, got %d", code)
 		}
@@ -348,7 +386,7 @@ func TestExitCodes(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel before run
 
-		code := Run(ctx, albumURL, tempDir, photoSvc, visionSvc, store)
+		code := Run(ctx, albumURL, tempDir, photoSvc, visionSvc, store, nil)
 		if code != 1 {
 			t.Errorf("expected exit code 1 for cancelled context, got %d", code)
 		}
@@ -408,4 +446,274 @@ func TestConfigParsing(t *testing.T) {
 			t.Fatalf("expected error when album URL is missing, got nil")
 		}
 	})
+
+	t.Run("GitHubTokenFlagOverridesEnv", func(t *testing.T) {
+		t.Setenv("PHOTOS_ALBUM_URL", "https://photos.app.goo.gl/env-album")
+		t.Setenv("GITHUB_TOKEN", "env-token-xyz")
+
+		cfg, err := parseConfig([]string{"-github-token", "flag-token-123"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.GitHubToken != "flag-token-123" {
+			t.Errorf("expected GitHubToken 'flag-token-123', got %q", cfg.GitHubToken)
+		}
+	})
+
+	t.Run("GitHubTokenEnvFallback", func(t *testing.T) {
+		t.Setenv("PHOTOS_ALBUM_URL", "https://photos.app.goo.gl/env-album")
+		t.Setenv("GITHUB_TOKEN", "env-token-xyz")
+
+		cfg, err := parseConfig([]string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.GitHubToken != "env-token-xyz" {
+			t.Errorf("expected GitHubToken 'env-token-xyz', got %q", cfg.GitHubToken)
+		}
+	})
+
+	t.Run("GitHubTokenDefaultEmpty", func(t *testing.T) {
+		t.Setenv("PHOTOS_ALBUM_URL", "https://photos.app.goo.gl/env-album")
+		os.Unsetenv("GITHUB_TOKEN")
+
+		cfg, err := parseConfig([]string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.GitHubToken != "" {
+			t.Errorf("expected empty GitHubToken, got %q", cfg.GitHubToken)
+		}
+	})
 }
+
+func TestRun_AllSuccessful(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "p1", DownloadURL: "https://photos.google.com/p1"},
+			{ID: "p2", DownloadURL: "https://photos.google.com/p2"},
+		},
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+
+	code := Run(context.Background(), "https://photos.app.goo.gl/test", tempDir, photoSvc, visionSvc, store, reporter)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if reporter.createCalls.Load() != 0 {
+		t.Errorf("expected 0 reporter create calls, got %d", reporter.createCalls.Load())
+	}
+	if reporter.hasActiveCalls.Load() != 0 {
+		t.Errorf("expected 0 reporter hasActive calls, got %d", reporter.hasActiveCalls.Load())
+	}
+}
+
+func TestRun_EmptyAlbum(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoSvc := &mockPhotoService{photos: []photos.Photo{}}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+
+	code := Run(context.Background(), "https://photos.app.goo.gl/test", tempDir, photoSvc, visionSvc, store, reporter)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if reporter.createCalls.Load() != 0 {
+		t.Errorf("expected 0 reporter create calls, got %d", reporter.createCalls.Load())
+	}
+	if reporter.hasActiveCalls.Load() != 0 {
+		t.Errorf("expected 0 reporter hasActive calls, got %d", reporter.hasActiveCalls.Load())
+	}
+}
+
+func TestRun_AllAlreadyProcessed(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	_ = store.SaveProcessedPhoto("p1")
+	_ = store.SaveProcessedPhoto("p2")
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "p1", DownloadURL: "https://photos.google.com/p1"},
+			{ID: "p2", DownloadURL: "https://photos.google.com/p2"},
+		},
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+
+	code := Run(context.Background(), "https://photos.app.goo.gl/test", tempDir, photoSvc, visionSvc, store, reporter)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if reporter.createCalls.Load() != 0 {
+		t.Errorf("expected 0 reporter create calls, got %d", reporter.createCalls.Load())
+	}
+	if reporter.hasActiveCalls.Load() != 0 {
+		t.Errorf("expected 0 reporter hasActive calls, got %d", reporter.hasActiveCalls.Load())
+	}
+}
+
+func TestRun_PartialSuccessWithErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "p1", DownloadURL: "https://photos.google.com/p1"},
+			{ID: "p2", DownloadURL: "https://photos.google.com/p2"},
+		},
+		downloadErrByID: map[string]error{
+			"p2": errors.New("download transient error"),
+		},
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+
+	code := Run(context.Background(), "https://photos.app.goo.gl/test", tempDir, photoSvc, visionSvc, store, reporter)
+	if code != 1 {
+		t.Fatalf("expected exit code 1 for partial success with errors, got %d", code)
+	}
+	if reporter.createCalls.Load() != 0 {
+		t.Errorf("expected 0 reporter create calls for partial success, got %d", reporter.createCalls.Load())
+	}
+	if reporter.hasActiveCalls.Load() != 0 {
+		t.Errorf("expected 0 reporter hasActive calls for partial success, got %d", reporter.hasActiveCalls.Load())
+	}
+}
+
+func TestRun_ZeroSuccessFailure_FilesIssue(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "p1", DownloadURL: "https://photos.google.com/p1"},
+			{ID: "p2", DownloadURL: "https://photos.google.com/p2"},
+		},
+		downloadErrByID: map[string]error{
+			"p1": errors.New("download err 1"),
+			"p2": errors.New("download err 2"),
+		},
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+
+	code := Run(context.Background(), "https://photos.app.goo.gl/test", tempDir, photoSvc, visionSvc, store, reporter)
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if reporter.hasActiveCalls.Load() != 1 {
+		t.Errorf("expected 1 hasActive call, got %d", reporter.hasActiveCalls.Load())
+	}
+	if reporter.createCalls.Load() != 1 {
+		t.Errorf("expected 1 create call, got %d", reporter.createCalls.Load())
+	}
+	if reporter.lastReport.Stage != "Photo Processing - 0 Synced" {
+		t.Errorf("expected stage 'Photo Processing - 0 Synced', got %q", reporter.lastReport.Stage)
+	}
+	if reporter.lastReport.PhotosFetched != 2 {
+		t.Errorf("expected 2 photos fetched, got %d", reporter.lastReport.PhotosFetched)
+	}
+	if reporter.lastReport.PhotosAttempted != 2 {
+		t.Errorf("expected 2 photos attempted, got %d", reporter.lastReport.PhotosAttempted)
+	}
+	if reporter.lastReport.PhotosSuccessful != 0 {
+		t.Errorf("expected 0 photos successful, got %d", reporter.lastReport.PhotosSuccessful)
+	}
+}
+
+func TestRun_AlbumFetchFailure_FilesIssue(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoSvc := &mockPhotoService{
+		fetchErr: errors.New("cannot fetch album"),
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+
+	code := Run(context.Background(), "https://photos.app.goo.gl/test", tempDir, photoSvc, visionSvc, store, reporter)
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if reporter.hasActiveCalls.Load() != 1 {
+		t.Errorf("expected 1 hasActive call, got %d", reporter.hasActiveCalls.Load())
+	}
+	if reporter.createCalls.Load() != 1 {
+		t.Errorf("expected 1 create call, got %d", reporter.createCalls.Load())
+	}
+	if reporter.lastReport.Stage != "Album Fetch" {
+		t.Errorf("expected stage 'Album Fetch', got %q", reporter.lastReport.Stage)
+	}
+}
+
+func TestRun_ActiveIssueAlreadyExists_SkipsCreation(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoSvc := &mockPhotoService{
+		fetchErr: errors.New("cannot fetch album"),
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{
+		hasActiveIssue: true,
+	}
+
+	code := Run(context.Background(), "https://photos.app.goo.gl/test", tempDir, photoSvc, visionSvc, store, reporter)
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if reporter.hasActiveCalls.Load() != 1 {
+		t.Errorf("expected 1 hasActive call, got %d", reporter.hasActiveCalls.Load())
+	}
+	if reporter.createCalls.Load() != 0 {
+		t.Errorf("expected 0 create calls due to deduplication, got %d", reporter.createCalls.Load())
+	}
+}
+
+func TestRun_MissingGitHubToken_DoesNotPanic(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoSvc := &mockPhotoService{
+		fetchErr: errors.New("cannot fetch album"),
+	}
+	visionSvc := &mockVisionService{}
+
+	code := Run(context.Background(), "https://photos.app.goo.gl/test", tempDir, photoSvc, visionSvc, store, nil)
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestRun_ContextCancelled_FilesIssue(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "p1", DownloadURL: "https://photos.google.com/p1"},
+		},
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel context before run
+
+	code := Run(ctx, "https://photos.app.goo.gl/test", tempDir, photoSvc, visionSvc, store, reporter)
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if reporter.hasActiveCalls.Load() != 1 {
+		t.Errorf("expected 1 hasActive call, got %d", reporter.hasActiveCalls.Load())
+	}
+	if reporter.createCalls.Load() != 1 {
+		t.Errorf("expected 1 create call, got %d", reporter.createCalls.Load())
+	}
+	if reporter.lastCtx == nil || reporter.lastCtxErr != nil {
+		t.Errorf("expected decoupled context with nil error at call time, got err=%v", reporter.lastCtxErr)
+	}
+	if _, ok := reporter.lastCtx.Deadline(); !ok {
+		t.Errorf("expected decoupled context to have a timeout deadline")
+	}
+}
+

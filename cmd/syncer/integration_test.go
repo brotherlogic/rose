@@ -111,7 +111,7 @@ AF_initDataCallback({
 	albumURL := "https://photos.app.goo.gl/shortlink"
 
 	// 1. Initial Synchronization Pass
-	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store)
+	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, nil)
 	if exitCode != 0 {
 		t.Fatalf("first Run pass failed with exit code %d", exitCode)
 	}
@@ -190,7 +190,7 @@ AF_initDataCallback({
 	}
 
 	// 4. Verify Idempotency (Second Pass)
-	pass2ExitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store)
+	pass2ExitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, nil)
 	if pass2ExitCode != 0 {
 		t.Fatalf("second Run pass failed with exit code %d", pass2ExitCode)
 	}
