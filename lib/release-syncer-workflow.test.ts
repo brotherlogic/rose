@@ -70,10 +70,12 @@ describe('Background Syncer Release Workflow (.github/workflows/upload-syncer.ym
       expect(content).toMatch(/uses:\s*docker\/setup-buildx-action@v3/);
     });
 
-    it('should extract Docker metadata targeting ghcr.io/brotherlogic/rose-syncer', () => {
+    it('should extract Docker metadata targeting ghcr.io/brotherlogic/rose-syncer with semver and latest tags', () => {
       const content = fs.readFileSync(uploadSyncerWorkflowPath, 'utf-8');
       expect(content).toMatch(/uses:\s*docker\/metadata-action@v5/);
       expect(content).toContain('ghcr.io/brotherlogic/rose-syncer');
+      expect(content).toContain('type=semver,pattern={{version}}');
+      expect(content).toContain('type=raw,value=latest');
     });
 
     it('should authenticate to GHCR using docker/login-action@v3', () => {
@@ -91,5 +93,23 @@ describe('Background Syncer Release Workflow (.github/workflows/upload-syncer.ym
       expect(content).toMatch(/tags:\s*\$\{\{\s*steps\.meta\.outputs\.tags\s*\}\}/);
       expect(content).toMatch(/platforms:\s*.*linux\/amd64.*linux\/arm64|platforms:\s*.*linux\/arm64.*linux\/amd64/);
     });
+
+    it('should align release workflow container target with Flux GitOps manifests', () => {
+      const workflowContent = fs.readFileSync(uploadSyncerWorkflowPath, 'utf-8');
+      const imagesYamlPath = path.join(rootDir, 'deploy', 'rose-images.yaml');
+      const imagesContent = fs.readFileSync(imagesYamlPath, 'utf-8');
+      const cronjobYamlPath = path.join(rootDir, 'deploy', 'rose-syncer-cronjob.yaml');
+      const cronjobContent = fs.readFileSync(cronjobYamlPath, 'utf-8');
+
+      // Workflow publishes to ghcr.io/brotherlogic/rose-syncer
+      expect(workflowContent).toContain('ghcr.io/brotherlogic/rose-syncer');
+      // Flux ImageRepository monitors the same target
+      expect(imagesContent).toContain('image: ghcr.io/brotherlogic/rose-syncer');
+      // Flux ImagePolicy specifies semver range 0.x.0
+      expect(imagesContent).toContain('range: 0.x.0');
+      // CronJob setter annotation matches the ImagePolicy
+      expect(cronjobContent).toContain('# {"$imagepolicy": "flux-system:rose-syncer"}');
+    });
   });
 });
+

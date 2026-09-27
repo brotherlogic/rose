@@ -227,4 +227,35 @@ describe('Syncer CronJob Infrastructure Verification (#75)', () => {
       expect(output).toContain('=== All syncer infrastructure manifests verified successfully ===');
     });
   });
+
+  describe('Deliverable 5: End-to-End Release Pipeline and Cross-Repository Policy Verification (#96)', () => {
+    const imagesYamlPath = path.join(rootDir, 'deploy', 'rose-images.yaml');
+
+    it('should assert cross-reference to brotherlogic/rose#96 in deploy/rose-images.yaml', () => {
+      const content = fs.readFileSync(imagesYamlPath, 'utf-8');
+      expect(content).toContain('brotherlogic/rose#96');
+    });
+
+    it('should verify scripts/verify-syncer-infrastructure-manifests.sh checks for brotherlogic/rose#96 reference', () => {
+      const scriptContent = fs.readFileSync(verifyScriptPath, 'utf-8');
+      expect(scriptContent).toContain('brotherlogic/rose#96');
+    });
+
+    it('should verify parent issues #79 and #85 contain cross-referencing comments linking to brotherlogic/prod#993', () => {
+      const comments79Raw = execSync('gh issue view 79 --json comments', { encoding: 'utf-8' });
+      const comments79 = JSON.parse(comments79Raw).comments;
+      const foundIn79 = comments79.some((c: { body: string }) =>
+        c.body.includes('brotherlogic/prod/issues/993') || c.body.includes('brotherlogic/prod#993')
+      );
+      expect(foundIn79).toBe(true);
+
+      const comments85Raw = execSync('gh issue view 85 --json comments', { encoding: 'utf-8' });
+      const comments85 = JSON.parse(comments85Raw).comments;
+      const foundIn85 = comments85.some((c: { body: string }) =>
+        c.body.includes('brotherlogic/prod/issues/993') || c.body.includes('brotherlogic/prod#993')
+      );
+      expect(foundIn85).toBe(true);
+    });
+  });
 });
+
