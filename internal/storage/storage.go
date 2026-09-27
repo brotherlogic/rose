@@ -2,8 +2,10 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Store struct {
@@ -69,3 +71,17 @@ func (s *Store) WriteArtworkProto(id string, data []byte) error {
 	filePath := filepath.Join(s.BasePath, id+".proto.bin")
 	return os.WriteFile(filePath, data, 0644)
 }
+
+func (s *Store) WriteImage(id string, data []byte) error {
+	if id == "" || id != filepath.Base(id) || id == "." || strings.Contains(id, "/") || strings.Contains(id, "\\") || strings.Contains(id, "..") {
+		return fmt.Errorf("invalid photo id %q: path traversal or invalid characters detected", id)
+	}
+
+	if err := os.MkdirAll(s.BasePath, 0755); err != nil {
+		return err
+	}
+
+	filePath := filepath.Join(s.BasePath, id+".jpg")
+	return os.WriteFile(filePath, data, 0644)
+}
+

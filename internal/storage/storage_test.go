@@ -91,3 +91,88 @@ func TestStorageRobustness_NonExistentDirectory(t *testing.T) {
 	}
 }
 
+func TestWriteImage_Success(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	data := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00}
+	err := store.WriteImage("photo123", data)
+	if err != nil {
+		t.Fatalf("expected WriteImage to succeed, got error: %v", err)
+	}
+
+	expectedPath := filepath.Join(tempDir, "photo123.jpg")
+	readData, err := os.ReadFile(expectedPath)
+	if err != nil {
+		t.Fatalf("expected image file to exist at %s: %v", expectedPath, err)
+	}
+
+	if string(readData) != string(data) {
+		t.Errorf("image content mismatch: got %v, want %v", readData, data)
+	}
+
+	info, err := os.Stat(expectedPath)
+	if err != nil {
+		t.Fatalf("failed to stat written file: %v", err)
+	}
+	if info.Mode().Perm() != 0644 {
+		t.Errorf("expected file mode 0644, got %v", info.Mode().Perm())
+	}
+}
+
+func TestWriteImage_DirectoryTraversal(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	data := []byte("image payload")
+	maliciousIDs := []string{
+		"../photo",
+		"../../etc/passwd",
+		"/root/image",
+		"sub/dir/img",
+		"..",
+		".",
+		"",
+		"nested\\file",
+		"foo/../bar",
+	}
+
+	for _, malID := range maliciousIDs {
+		t.Run(malID, func(t *testing.T) {
+			err := store.WriteImage(malID, data)
+			if err == nil {
+				t.Fatalf("expected error for malicious ID %q, but got nil", malID)
+			}
+		})
+	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("failed to read tempDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected no files written for malicious IDs, found %d entries", len(entries))
+	}
+}
+
+func TestWriteImage_AutoCreateDirectory(t *testing.T) {
+	tempDir := t.TempDir()
+	nestedDir := filepath.Join(tempDir, "nested", "storage", "images")
+	store := NewStore(nestedDir)
+
+	data := []byte("auto-create-image-data")
+	err := store.WriteImage("photo_new", data)
+	if err != nil {
+		t.Fatalf("expected WriteImage to auto-create directory and succeed, got error: %v", err)
+	}
+
+	expectedPath := filepath.Join(nestedDir, "photo_new.jpg")
+	readData, err := os.ReadFile(expectedPath)
+	if err != nil {
+		t.Fatalf("expected file to exist at %s: %v", expectedPath, err)
+	}
+	if string(readData) != string(data) {
+		t.Errorf("expected file content %s, got %s", string(data), string(readData))
+	}
+}
+
