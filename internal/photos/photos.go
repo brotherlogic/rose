@@ -43,6 +43,15 @@ func NewService() *Service {
 	}
 }
 
+// NewServiceWithClient creates a new Service with a custom HTTP client,
+// enabling custom transports and mock servers in integration tests.
+func NewServiceWithClient(client *http.Client) *Service {
+	return &Service{
+		client: client,
+	}
+}
+
+
 // ValidateAlbumURL enforces https scheme and restricts allowed hostnames
 // strictly to photos.app.goo.gl and photos.google.com.
 func ValidateAlbumURL(urlStr string) (*url.URL, error) {
