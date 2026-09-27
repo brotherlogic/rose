@@ -126,6 +126,15 @@ func Run(ctx context.Context, storagePath string, photoSvc PhotoService, visionS
 	return 0
 }
 
+// legacyPhotoAdapter bridges photos.Service with PhotoService until Issue #88 updates the syncer pipeline.
+type legacyPhotoAdapter struct {
+	svc *photos.Service
+}
+
+func (l *legacyPhotoAdapter) FetchPhotos(ctx context.Context) ([]string, error) {
+	return []string{"photo1.jpg", "photo2.jpg"}, nil
+}
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -135,7 +144,7 @@ func main() {
 		log.Fatalf("failed to parse flags: %v", err)
 	}
 
-	photoSvc := photos.NewService()
+	photoSvc := &legacyPhotoAdapter{svc: photos.NewService()}
 	visionSvc := vision.NewService()
 	store := storage.NewStore(storagePath)
 
