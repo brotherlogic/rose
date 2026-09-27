@@ -1,6 +1,6 @@
-# Specification: Flux GitOps Image Automation for Rose Web Gallery
+# Specification: Flux GitOps Image Automation for Rose Web Gallery and Syncer
 # Reference: brotherlogic/prod#975
-# Parent Rose Specifications: brotherlogic/rose#30, brotherlogic/rose#63, brotherlogic/rose#64, brotherlogic/rose#66, brotherlogic/rose#67
+# Parent Rose Specifications: brotherlogic/rose#30, brotherlogic/rose#63, brotherlogic/rose#64, brotherlogic/rose#66, brotherlogic/rose#67, brotherlogic/rose#79, brotherlogic/rose#85, brotherlogic/rose#92
 
 apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImageRepository
@@ -47,3 +47,25 @@ spec:
   update:
     path: ./projects/rose/
     strategy: Setters
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: rose-syncer
+  namespace: flux-system
+spec:
+  image: ghcr.io/brotherlogic/rose-syncer
+  interval: 1m0s
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: rose-syncer
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: rose-syncer
+  policy:
+    semver:
+      range: 0.x.0
+
