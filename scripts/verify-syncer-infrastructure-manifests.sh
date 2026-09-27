@@ -43,6 +43,7 @@ echo "Verifying syncer image automation specifications in rose-images.yaml..."
 grep -q "brotherlogic/rose#79" "${DEPLOY_DIR}/rose-images.yaml" || (echo "Missing #79 ref in rose-images.yaml" && exit 1)
 grep -q "brotherlogic/rose#85" "${DEPLOY_DIR}/rose-images.yaml" || (echo "Missing #85 ref in rose-images.yaml" && exit 1)
 grep -q "brotherlogic/rose#92" "${DEPLOY_DIR}/rose-images.yaml" || (echo "Missing #92 ref in rose-images.yaml" && exit 1)
+grep -q "brotherlogic/rose#96" "${DEPLOY_DIR}/rose-images.yaml" || (echo "Missing #96 ref in rose-images.yaml" && exit 1)
 
 # Verify rose-syncer definitions in rose-images.yaml
 grep -q "name: rose-syncer" "${DEPLOY_DIR}/rose-images.yaml" || (echo "Missing rose-syncer name in rose-images.yaml" && exit 1)
