@@ -40,7 +40,17 @@ interface CronJobResource {
               name: string;
               image: string;
               imagePullPolicy?: string;
-              env?: Array<{ name: string; value: string }>;
+              env?: Array<{
+                name: string;
+                value?: string;
+                valueFrom?: {
+                  secretKeyRef?: {
+                    name: string;
+                    key: string;
+                    optional?: boolean;
+                  };
+                };
+              }>;
               resources?: {
                 requests?: { cpu: string; memory: string };
                 limits?: { cpu: string; memory: string };
@@ -113,6 +123,16 @@ describe('Rose Syncer CronJob Manifest Turnup Specification (#73)', () => {
       expect(container.env).toEqual([
         { name: 'STORAGE_PATH', value: '/data' },
         { name: 'GOOGLE_APPLICATION_CREDENTIALS', value: '/etc/secrets/gcp/credentials.json' },
+        {
+          name: 'GITHUB_TOKEN',
+          valueFrom: {
+            secretKeyRef: {
+              name: 'rose-github-secret',
+              key: 'token',
+              optional: true,
+            },
+          },
+        },
       ]);
 
       expect(container.resources).toEqual({
@@ -144,6 +164,21 @@ describe('Rose Syncer CronJob Manifest Turnup Specification (#73)', () => {
           },
         },
       ]);
+    });
+
+    it('should configure GITHUB_TOKEN secret injection with optional flag (#108)', () => {
+      const content = fs.readFileSync(cronJobManifestPath, 'utf-8');
+      const cronJob = yaml.load(content) as CronJobResource;
+      const containers = cronJob.spec?.jobTemplate?.spec?.template?.spec?.containers;
+      const container = containers?.[0];
+      const githubTokenEnv = container?.env?.find((e) => e.name === 'GITHUB_TOKEN');
+
+      expect(githubTokenEnv).toBeDefined();
+      expect(githubTokenEnv?.valueFrom?.secretKeyRef).toEqual({
+        name: 'rose-github-secret',
+        key: 'token',
+        optional: true,
+      });
     });
   });
 
