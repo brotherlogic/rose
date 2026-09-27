@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { execSync } from 'child_process';
 // @ts-expect-error js-yaml types
 import * as yaml from 'js-yaml';
 
@@ -174,6 +175,56 @@ describe('Syncer CronJob Infrastructure Verification (#75)', () => {
       expect(fs.existsSync(verifyScriptPath)).toBe(true);
       const stats = fs.statSync(verifyScriptPath);
       expect(stats.mode & 0o111).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Deliverable 4: Rose Syncer Image Automation Manifest & Script Verification (#95)', () => {
+    const imagesYamlPath = path.join(rootDir, 'deploy', 'rose-images.yaml');
+
+    it('should verify deploy/rose-images.yaml contains rose-syncer ImageRepository and ImagePolicy specifications', () => {
+      const content = fs.readFileSync(imagesYamlPath, 'utf-8');
+      const docs = yaml.loadAll(content) as ManifestDoc[];
+
+      const imageRepo = docs.find((d) => d?.kind === 'ImageRepository' && d?.metadata?.name === 'rose-syncer');
+      expect(imageRepo).toBeDefined();
+      expect(imageRepo?.apiVersion).toBe('image.toolkit.fluxcd.io/v1');
+      expect(imageRepo?.metadata?.namespace).toBe('flux-system');
+      expect(imageRepo?.spec?.image).toBe('ghcr.io/brotherlogic/rose-syncer');
+      expect(imageRepo?.spec?.interval).toBe('1m0s');
+
+      const imagePolicy = docs.find((d) => d?.kind === 'ImagePolicy' && d?.metadata?.name === 'rose-syncer');
+      expect(imagePolicy).toBeDefined();
+      expect(imagePolicy?.apiVersion).toBe('image.toolkit.fluxcd.io/v1');
+      expect(imagePolicy?.metadata?.namespace).toBe('flux-system');
+      expect(imagePolicy?.spec?.imageRepositoryRef?.name).toBe('rose-syncer');
+      expect(imagePolicy?.spec?.policy?.semver?.range).toBe('0.x.0');
+    });
+
+    it('should assert annotation in deploy/rose-syncer-cronjob.yaml matches policy name flux-system:rose-syncer', () => {
+      const cronJobContent = fs.readFileSync(cronJobYamlPath, 'utf-8');
+      expect(cronJobContent).toContain('# {"$imagepolicy": "flux-system:rose-syncer"}');
+    });
+
+    it('should assert cross-references to parent issues #79, #85, #92 and prod tracking issue #993 in deploy/rose-images.yaml', () => {
+      const content = fs.readFileSync(imagesYamlPath, 'utf-8');
+      expect(content).toContain('brotherlogic/rose#79');
+      expect(content).toContain('brotherlogic/rose#85');
+      expect(content).toContain('brotherlogic/rose#92');
+      expect(content).toContain('brotherlogic/prod#993');
+    });
+
+    it('should verify scripts/verify-syncer-infrastructure-manifests.sh validates rose-images.yaml, prod#993, and parent issues', () => {
+      const scriptContent = fs.readFileSync(verifyScriptPath, 'utf-8');
+      expect(scriptContent).toContain('rose-images.yaml');
+      expect(scriptContent).toContain('rose-syncer');
+      expect(scriptContent).toContain('brotherlogic/prod#993');
+      expect(scriptContent).toContain('brotherlogic/rose#85');
+      expect(scriptContent).toContain('brotherlogic/rose#92');
+    });
+
+    it('should execute scripts/verify-syncer-infrastructure-manifests.sh and pass all checks', () => {
+      const output = execSync(`bash ${verifyScriptPath}`, { encoding: 'utf-8' });
+      expect(output).toContain('=== All syncer infrastructure manifests verified successfully ===');
     });
   });
 });
