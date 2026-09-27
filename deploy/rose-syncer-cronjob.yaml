@@ -1,12 +1,12 @@
 # Specification: Rose Background Syncer CronJob Manifest
 # Reference: brotherlogic/prod#976
-# Parent Rose Specifications: brotherlogic/rose#31, brotherlogic/rose#71, brotherlogic/rose#72, brotherlogic/rose#73, brotherlogic/rose#75
+# Parent Rose Specifications: brotherlogic/rose#31, brotherlogic/rose#71, brotherlogic/rose#72, brotherlogic/rose#73, brotherlogic/rose#75, brotherlogic/rose#108
 # Turnup Contract:
 #   Repository: brotherlogic/prod
 #   File Path: projects/rose/cronjob.yaml
 #   Components: CronJob (rose-syncer) in namespace rose
 #   Entrypoint: /syncer
-#   Environment: STORAGE_PATH=/data, GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/gcp/credentials.json
+#   Environment: STORAGE_PATH=/data, GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/gcp/credentials.json, GITHUB_TOKEN (optional from rose-github-secret)
 #   Volume Mounts: rose-data-pvc -> /data, rose-gcp-sa-secret -> /etc/secrets/gcp/credentials.json (read-only)
 #   Security Context: runAsUser 65532, runAsGroup 65532, fsGroup 65532
 
@@ -51,6 +51,12 @@ spec:
                   value: /data
                 - name: GOOGLE_APPLICATION_CREDENTIALS
                   value: /etc/secrets/gcp/credentials.json
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: rose-github-secret
+                      key: token
+                      optional: true
               resources:
                 requests:
                   cpu: 100m
