@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,9 +19,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// PhotoService defines the interface for fetching photos.
+// PhotoService defines the interface for fetching photos and downloading image binaries.
 type PhotoService interface {
-	FetchPhotos(ctx context.Context) ([]string, error)
+	FetchPhotos(ctx context.Context, albumURL string) ([]photos.Photo, error)
+	DownloadImage(ctx context.Context, downloadURL string) ([]byte, error)
 }
 
 // VisionService defines the interface for analyzing photo content.
@@ -26,29 +30,59 @@ type VisionService interface {
 	AnalyzeImage(ctx context.Context, img []byte) (string, string, error)
 }
 
-// parseStoragePath parses the -storage-path flag with fallback to STORAGE_PATH env var, then /data.
-func parseStoragePath(args []string) (string, error) {
+// Config holds the configuration for syncer CLI execution.
+type Config struct {
+	AlbumURL    string
+	StoragePath string
+}
+
+// parseConfig parses CLI flags and environment variables.
+func parseConfig(args []string) (*Config, error) {
+	defaultAlbum := os.Getenv("PHOTOS_ALBUM_URL")
 	defaultStorage := os.Getenv("STORAGE_PATH")
 	if defaultStorage == "" {
 		defaultStorage = "/data"
 	}
 
 	fs := flag.NewFlagSet("syncer", flag.ContinueOnError)
+	albumURL := fs.String("album-url", defaultAlbum, "Google Photos public shared album URL")
 	storagePath := fs.String("storage-path", defaultStorage, "Path to storage directory")
+
 	if err := fs.Parse(args); err != nil {
-		return "", err
+		return nil, err
 	}
-	return *storagePath, nil
+
+	trimmedAlbum := strings.TrimSpace(*albumURL)
+	if trimmedAlbum == "" {
+		return nil, fmt.Errorf("album URL must be specified via -album-url flag or PHOTOS_ALBUM_URL environment variable")
+	}
+
+	return &Config{
+		AlbumURL:    trimmedAlbum,
+		StoragePath: *storagePath,
+	}, nil
 }
 
-// Run executes a single synchronization pass over photos.
-func Run(ctx context.Context, storagePath string, photoSvc PhotoService, visionSvc VisionService, store *storage.Store) int {
+// isRateLimitError checks if an error represents an HTTP 429 rate limit.
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, photos.ErrRateLimited) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "429") || strings.Contains(strings.ToLower(msg), "rate limit")
+}
+
+// Run executes a single synchronization pass over photos from the shared album.
+func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoService, visionSvc VisionService, store *storage.Store) int {
 	if err := os.MkdirAll(storagePath, 0755); err != nil {
 		log.Printf("failed to ensure storage directory %s: %v", storagePath, err)
 		return 1
 	}
 
-	photosList, err := photoSvc.FetchPhotos(ctx)
+	photosList, err := photoSvc.FetchPhotos(ctx, albumURL)
 	if err != nil {
 		log.Printf("failed to fetch photos: %v", err)
 		return 1
@@ -60,61 +94,80 @@ func Run(ctx context.Context, storagePath string, photoSvc PhotoService, visionS
 	}
 
 	var errCount int
-	for _, id := range photosList {
-		select {
-		case <-ctx.Done():
+	for _, photo := range photosList {
+		if ctx.Err() != nil {
 			log.Printf("Context cancelled: %v", ctx.Err())
 			return 1
-		default:
 		}
 
-		processed, err := store.IsPhotoProcessed(id)
+		processed, err := store.IsPhotoProcessed(photo.ID)
 		if err != nil {
-			log.Printf("Error checking sync status for %s: %v", id, err)
+			log.Printf("Error checking sync status for %s: %v", photo.ID, err)
 			errCount++
 			continue
 		}
 		if processed {
-			log.Printf("Photo %s already processed, skipping", id)
+			log.Printf("Photo %s already processed, skipping", photo.ID)
 			continue
 		}
 
-		desc, theme, err := visionSvc.AnalyzeImage(ctx, nil)
+		// Stream raw image bytes
+		imgBytes, err := photoSvc.DownloadImage(ctx, photo.DownloadURL)
 		if err != nil {
-			log.Printf("Error analyzing image %s: %v", id, err)
+			if isRateLimitError(err) {
+				log.Printf("Rate limit encountered downloading %s: %v, aborting", photo.ID, err)
+				return 1
+			}
+			log.Printf("Error downloading image %s: %v", photo.ID, err)
+			errCount++
+			continue
+		}
+
+		// Persist raw image to disk
+		if err := store.WriteImage(photo.ID, imgBytes); err != nil {
+			log.Printf("Error writing raw image %s: %v, aborting immediately", photo.ID, err)
+			return 1
+		}
+
+		// Pass raw image bytes to vision service
+		desc, theme, err := visionSvc.AnalyzeImage(ctx, imgBytes)
+		if err != nil {
+			if isRateLimitError(err) {
+				log.Printf("Rate limit encountered during vision analysis for %s: %v, aborting", photo.ID, err)
+				return 1
+			}
+			log.Printf("Error analyzing image %s: %v", photo.ID, err)
 			errCount++
 			continue
 		}
 
 		artwork := &gallery.Artwork{
-			Id:          id,
+			Id:          photo.ID,
 			Title:       desc,
 			Description: desc,
 			ThemeId:     theme,
 			Timestamp:   time.Now().Unix(),
-			ImagePath:   id,
+			ImagePath:   photo.ID + ".jpg",
 		}
 
-		data, err := proto.Marshal(artwork)
+		protoData, err := proto.Marshal(artwork)
 		if err != nil {
-			log.Printf("Error marshaling proto for %s: %v", id, err)
+			log.Printf("Error marshaling proto for %s: %v", photo.ID, err)
 			errCount++
 			continue
 		}
 
-		if err := store.WriteArtworkProto(id, data); err != nil {
-			log.Printf("Error writing artwork proto for %s: %v", id, err)
-			errCount++
-			continue
+		if err := store.WriteArtworkProto(photo.ID, protoData); err != nil {
+			log.Printf("Error writing artwork proto for %s: %v, aborting immediately", photo.ID, err)
+			return 1
 		}
 
-		if err := store.SaveProcessedPhoto(id); err != nil {
-			log.Printf("Error saving processed state for %s: %v", id, err)
-			errCount++
-			continue
+		if err := store.SaveProcessedPhoto(photo.ID); err != nil {
+			log.Printf("Error saving processed state for %s: %v, aborting immediately", photo.ID, err)
+			return 1
 		}
 
-		log.Printf("Successfully processed and stored photo %s", id)
+		log.Printf("Successfully processed and stored photo %s", photo.ID)
 	}
 
 	if errCount > 0 {
@@ -126,28 +179,20 @@ func Run(ctx context.Context, storagePath string, photoSvc PhotoService, visionS
 	return 0
 }
 
-// legacyPhotoAdapter bridges photos.Service with PhotoService until Issue #88 updates the syncer pipeline.
-type legacyPhotoAdapter struct {
-	svc *photos.Service
-}
-
-func (l *legacyPhotoAdapter) FetchPhotos(ctx context.Context) ([]string, error) {
-	return []string{"photo1.jpg", "photo2.jpg"}, nil
-}
-
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	storagePath, err := parseStoragePath(os.Args[1:])
+	cfg, err := parseConfig(os.Args[1:])
 	if err != nil {
-		log.Fatalf("failed to parse flags: %v", err)
+		log.Printf("configuration error: %v", err)
+		os.Exit(1)
 	}
 
-	photoSvc := &legacyPhotoAdapter{svc: photos.NewService()}
+	photoSvc := photos.NewService()
 	visionSvc := vision.NewService()
-	store := storage.NewStore(storagePath)
+	store := storage.NewStore(cfg.StoragePath)
 
-	exitCode := Run(ctx, storagePath, photoSvc, visionSvc, store)
+	exitCode := Run(ctx, cfg.AlbumURL, cfg.StoragePath, photoSvc, visionSvc, store)
 	os.Exit(exitCode)
 }
