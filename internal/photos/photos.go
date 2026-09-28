@@ -9,12 +9,24 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // ErrRateLimited is returned when Google Photos responds with HTTP 429 Too Many Requests.
 var ErrRateLimited = errors.New("rate limited by Google Photos (HTTP 429)")
+
+const (
+	// MaxPaginationPages is the safety threshold preventing runaway pagination loops.
+	MaxPaginationPages = 100
+	// MaxBatchResponseBytes is the 10MB safety limit on continuation response payloads.
+	MaxBatchResponseBytes = 10 * 1024 * 1024
+	// batchExecutePath is the relative RPC endpoint path for Google Photos batchexecute.
+	batchExecutePath = "/_/PhotosUi/data/batchexecute"
+	// albumContinuationRPCID is the RPC method ID for album continuation queries.
+	albumContinuationRPCID = "snAcKc"
+)
 
 // Photo represents a media item extracted from a Google Photos shared album.
 type Photo struct {
@@ -222,11 +234,86 @@ func extractPhotosFromData(raw any) []Photo {
 			for _, elem := range node {
 				walk(elem)
 			}
+		case string:
+			trimmed := strings.TrimSpace(node)
+			if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+				var inner any
+				if err := json.Unmarshal([]byte(trimmed), &inner); err == nil {
+					walk(inner)
+				}
+			}
 		}
 	}
 
 	walk(raw)
 	return photos
+}
+
+// extractContinuationToken recursively inspects the unmarshaled AF_initDataCallback payload
+// or batchexecute response data to extract the continuation token string.
+func extractContinuationToken(raw any) string {
+	var token string
+	var walk func(v any) bool
+	walk = func(v any) bool {
+		switch node := v.(type) {
+		case []any:
+			// Check if node matches album structure: [albumMeta, itemsSlice, tokenString, ...]
+			if len(node) >= 3 {
+				if tok, ok := node[2].(string); ok && strings.TrimSpace(tok) != "" {
+					trimmed := strings.TrimSpace(tok)
+					if !strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, "{") {
+						if node[1] == nil {
+							token = trimmed
+							return true
+						}
+						if items, ok := node[1].([]any); ok {
+							if len(items) == 0 {
+								token = trimmed
+								return true
+							}
+							if _, isSlice := items[0].([]any); isSlice {
+								token = trimmed
+								return true
+							}
+						}
+					}
+				}
+			}
+
+			for _, elem := range node {
+				if walk(elem) {
+					return true
+				}
+			}
+
+		case map[string]any:
+			if dataVal, ok := node["data"]; ok {
+				if walk(dataVal) {
+					return true
+				}
+			}
+			for _, elem := range node {
+				if walk(elem) {
+					return true
+				}
+			}
+
+		case string:
+			trimmed := strings.TrimSpace(node)
+			if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+				var inner any
+				if err := json.Unmarshal([]byte(trimmed), &inner); err == nil {
+					if walk(inner) {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	walk(raw)
+	return token
 }
 
 // extractPhotosRegex scans HTML for Google Photos lh3 image URLs and extracts photo IDs and download URLs.
@@ -384,3 +471,112 @@ func (s *Service) DownloadImage(ctx context.Context, downloadURL string) ([]byte
 
 	return data, nil
 }
+
+// fetchContinuationBatch queries subsequent photo batches from /_/PhotosUi/data/batchexecute using token.
+func (s *Service) fetchContinuationBatch(ctx context.Context, albumHost, token string) ([]Photo, string, error) {
+	var reqURL string
+	if strings.HasPrefix(albumHost, "http://") || strings.HasPrefix(albumHost, "https://") {
+		parsedHost, err := url.Parse(albumHost)
+		if err == nil && parsedHost.Host != "" {
+			reqURL = fmt.Sprintf("%s://%s%s", parsedHost.Scheme, parsedHost.Host, batchExecutePath)
+		}
+	}
+	if reqURL == "" {
+		cleanHost := strings.TrimPrefix(albumHost, "https://")
+		cleanHost = strings.TrimPrefix(cleanHost, "http://")
+		cleanHost = strings.Split(cleanHost, "/")[0]
+		reqURL = fmt.Sprintf("https://%s%s", cleanHost, batchExecutePath)
+	}
+
+	tokenJSON, err := json.Marshal([]any{token})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to marshal continuation token: %w", err)
+	}
+
+	rpcCall := []any{albumContinuationRPCID, string(tokenJSON), nil, "generic"}
+	reqPayload := [][][]any{{rpcCall}}
+	reqPayloadBytes, err := json.Marshal(reqPayload)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to marshal request payload: %w", err)
+	}
+
+	form := url.Values{}
+	form.Set("f.req", string(reqPayloadBytes))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create batch request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	client := s.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to execute batch request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, "", ErrRateLimited
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, "", fmt.Errorf("batch execute unauthorized (HTTP 401)")
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, "", fmt.Errorf("batch execute forbidden (HTTP 403)")
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, "", fmt.Errorf("batch execute not found (HTTP 404)")
+	}
+	if resp.StatusCode >= 500 {
+		return nil, "", fmt.Errorf("google photos server error (HTTP %d)", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("unexpected HTTP status %d from batch execute", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, MaxBatchResponseBytes))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read batch response body: %w", err)
+	}
+
+	raw := strings.TrimLeft(string(bodyBytes), " \t\r\n")
+	if !strings.HasPrefix(raw, ")]}'") {
+		return nil, "", fmt.Errorf("invalid batch response: missing XSSI guard prefix")
+	}
+	raw = strings.TrimPrefix(raw, ")]}'")
+	raw = strings.TrimLeft(raw, " \t\r\n")
+
+	// Skip optional chunk length header (digits followed by newline)
+	if idx := strings.IndexByte(raw, '\n'); idx != -1 {
+		line := strings.TrimSpace(raw[:idx])
+		if _, err := strconv.Atoi(line); err == nil {
+			raw = strings.TrimLeft(raw[idx+1:], " \t\r\n")
+		}
+	}
+
+	var envelope any
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+		if jsonStr, ok := extractBalanced(raw); ok {
+			if err2 := json.Unmarshal([]byte(jsonStr), &envelope); err2 != nil {
+				return nil, "", fmt.Errorf("malformed batch response JSON: %w", err)
+			}
+		} else {
+			return nil, "", fmt.Errorf("malformed batch response JSON: %w", err)
+		}
+	}
+
+	extractedPhotos := extractPhotosFromData(envelope)
+	if extractedPhotos == nil {
+		extractedPhotos = []Photo{}
+	}
+	nextToken := extractContinuationToken(envelope)
+
+	return extractedPhotos, nextToken, nil
+}
+
