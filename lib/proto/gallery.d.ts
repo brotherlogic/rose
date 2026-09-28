@@ -41,6 +41,9 @@ export namespace gallery {
         /** Artwork imagePath. */
         imagePath: string;
 
+        /** Artwork thumbnailPath. */
+        thumbnailPath: string;
+
         /**
          * Creates a new Artwork instance using the specified properties.
          * @param [properties] Properties to set
@@ -142,6 +145,9 @@ export namespace gallery {
 
             /** Artwork imagePath */
             imagePath?: (string|null);
+
+            /** Artwork thumbnailPath */
+            thumbnailPath?: (string|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];

@@ -9,6 +9,7 @@ message Artwork {
   string theme_id = 4;
   int64 timestamp = 5; // Original EXIF date or upload date
   string image_path = 6;
+  string thumbnail_path = 7;
 }
 
 message Theme {
