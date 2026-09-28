@@ -49,4 +49,59 @@ describe('NFS Data Fetching', () => {
     expect(artworks[0].id).toBe('photo-1');
     expect(artworks[0].title).toBe('Test Photo');
   });
+
+  it('should decode thumbnailPath from .proto.bin files', () => {
+    const mockSyncState = { 'photo-1': true };
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+
+    const mockArtwork = gallery.Artwork.create({
+      id: 'photo-1',
+      title: 'Test Photo',
+      description: 'A test photo',
+      imagePath: '/mock/nfs/path/photo-1.jpg',
+      thumbnailPath: 'thumbnails/photo-1.webp',
+    });
+    const buffer = Buffer.from(gallery.Artwork.encode(mockArtwork).finish());
+
+    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+      if (filePath === path.join('/mock/nfs/path', '.sync-state.json')) {
+        return JSON.stringify(mockSyncState);
+      }
+      if (filePath === path.join('/mock/nfs/path', 'photo-1.proto.bin')) {
+        return buffer;
+      }
+      throw new Error(`File not found: ${filePath}`);
+    });
+
+    const artworks = getArtworks();
+    expect(artworks).toHaveLength(1);
+    expect(artworks[0].thumbnailPath).toBe('thumbnails/photo-1.webp');
+  });
+
+  it('should handle legacy .proto.bin files without thumbnailPath', () => {
+    const mockSyncState = { 'photo-legacy': true };
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+
+    const mockArtwork = gallery.Artwork.create({
+      id: 'photo-legacy',
+      title: 'Legacy Photo',
+      description: 'A legacy photo without thumbnailPath',
+      imagePath: '/mock/nfs/path/photo-legacy.jpg',
+    });
+    const buffer = Buffer.from(gallery.Artwork.encode(mockArtwork).finish());
+
+    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+      if (filePath === path.join('/mock/nfs/path', '.sync-state.json')) {
+        return JSON.stringify(mockSyncState);
+      }
+      if (filePath === path.join('/mock/nfs/path', 'photo-legacy.proto.bin')) {
+        return buffer;
+      }
+      throw new Error(`File not found: ${filePath}`);
+    });
+
+    const artworks = getArtworks();
+    expect(artworks).toHaveLength(1);
+    expect(artworks[0].thumbnailPath === '' || artworks[0].thumbnailPath === undefined).toBe(true);
+  });
 });
