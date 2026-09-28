@@ -128,6 +128,28 @@ func reportFailure(reporter github.IssueReporter, report github.FailureReport) {
 	log.Printf("Successfully created failure issue for stage: %s", report.Stage)
 }
 
+// buildArtwork creates a gallery.Artwork proto instance, checking if a thumbnail exists in storage
+// and populating ThumbnailPath if found, or falling back to empty string if absent or store is nil.
+func buildArtwork(photoID, description, theme string, store *storage.Store) *gallery.Artwork {
+	thumbnailPath := ""
+	if store != nil {
+		thumbFile := filepath.Join(store.BasePath, "thumbnails", photoID+".webp")
+		if fi, err := os.Stat(thumbFile); err == nil && !fi.IsDir() {
+			thumbnailPath = "thumbnails/" + photoID + ".webp"
+		}
+	}
+
+	return &gallery.Artwork{
+		Id:            photoID,
+		Title:         description,
+		Description:   description,
+		ThemeId:       theme,
+		Timestamp:     time.Now().Unix(),
+		ImagePath:     "images/" + photoID + ".jpg",
+		ThumbnailPath: thumbnailPath,
+	}
+}
+
 // Run executes a single synchronization pass over photos from the shared album.
 func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoService, visionSvc VisionService, store *storage.Store, reporter github.IssueReporter, m *metrics.Metrics) int {
 	if m == nil {
@@ -336,14 +358,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			continue
 		}
 
-		artwork := &gallery.Artwork{
-			Id:          photo.ID,
-			Title:       desc,
-			Description: desc,
-			ThemeId:     theme,
-			Timestamp:   time.Now().Unix(),
-			ImagePath:   "images/" + photo.ID + ".jpg",
-		}
+		artwork := buildArtwork(photo.ID, desc, theme, store)
 
 		protoData, err := proto.Marshal(artwork)
 		if err != nil {
