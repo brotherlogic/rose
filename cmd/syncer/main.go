@@ -6,13 +6,17 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/brotherlogic/rose/internal/github"
+	"github.com/brotherlogic/rose/internal/metrics"
 	"github.com/brotherlogic/rose/internal/photos"
 	"github.com/brotherlogic/rose/internal/storage"
 	"github.com/brotherlogic/rose/internal/vision"
@@ -36,6 +40,7 @@ type Config struct {
 	AlbumURL    string
 	StoragePath string
 	GitHubToken string
+	MetricsPort int
 }
 
 // parseConfig parses CLI flags and environment variables.
@@ -47,13 +52,27 @@ func parseConfig(args []string) (*Config, error) {
 	}
 	defaultToken := os.Getenv("GITHUB_TOKEN")
 
+	defaultMetricsPort := 8081
+	if envPort := os.Getenv("METRICS_PORT"); envPort != "" {
+		p, err := strconv.Atoi(envPort)
+		if err != nil {
+			return nil, fmt.Errorf("invalid METRICS_PORT: %w", err)
+		}
+		defaultMetricsPort = p
+	}
+
 	fs := flag.NewFlagSet("syncer", flag.ContinueOnError)
 	albumURL := fs.String("album-url", defaultAlbum, "Google Photos public shared album URL")
 	storagePath := fs.String("storage-path", defaultStorage, "Path to storage directory")
 	githubToken := fs.String("github-token", defaultToken, "GitHub access token for failure reporting")
+	metricsPort := fs.Int("metrics-port", defaultMetricsPort, "Port for Prometheus metrics HTTP server")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+
+	if *metricsPort < 1 || *metricsPort > 65535 {
+		return nil, fmt.Errorf("invalid metrics port %d: must be between 1 and 65535", *metricsPort)
 	}
 
 	trimmedAlbum := strings.TrimSpace(*albumURL)
@@ -65,6 +84,7 @@ func parseConfig(args []string) (*Config, error) {
 		AlbumURL:    trimmedAlbum,
 		StoragePath: *storagePath,
 		GitHubToken: strings.TrimSpace(*githubToken),
+		MetricsPort: *metricsPort,
 	}, nil
 }
 
@@ -305,6 +325,47 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 	return 0
 }
 
+// startMetricsServer binds the TCP listener on the configured port and starts an HTTP server serving the handler in a background goroutine.
+func startMetricsServer(port int, handler http.Handler) (net.Listener, *http.Server, error) {
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to bind metrics port %d: %w", port, err)
+	}
+
+	server := &http.Server{Handler: handler}
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("metrics server error: %v", err)
+		}
+	}()
+
+	return listener, server, nil
+}
+
+// runGracePeriod waits for the specified scrape grace period or immediately terminates if context is cancelled.
+func runGracePeriod(ctx context.Context, duration time.Duration) {
+	select {
+	case <-time.After(duration):
+		if duration == 60*time.Second {
+			log.Printf("Completed 60s Prometheus scrape grace period")
+		} else {
+			log.Printf("Completed %v Prometheus scrape grace period", duration)
+		}
+	case <-ctx.Done():
+		log.Printf("Termination signal received during grace period, shutting down immediately")
+	}
+}
+
+// shutdownServer gracefully shuts down the HTTP server within the specified timeout.
+func shutdownServer(server *http.Server, timeout time.Duration) error {
+	if server == nil {
+		return nil
+	}
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), timeout)
+	defer cancelShutdown()
+	return server.Shutdown(shutdownCtx)
+}
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -312,6 +373,13 @@ func main() {
 	cfg, err := parseConfig(os.Args[1:])
 	if err != nil {
 		log.Printf("configuration error: %v", err)
+		os.Exit(1)
+	}
+
+	m := metrics.NewMetrics()
+	_, server, err := startMetricsServer(cfg.MetricsPort, m.Handler())
+	if err != nil {
+		log.Printf("fatal: metrics port %d already bound or cannot be listened on: %v", cfg.MetricsPort, err)
 		os.Exit(1)
 	}
 
@@ -325,5 +393,10 @@ func main() {
 	}
 
 	exitCode := Run(ctx, cfg.AlbumURL, cfg.StoragePath, photoSvc, visionSvc, store, reporter)
+
+	runGracePeriod(ctx, 60*time.Second)
+
+	_ = shutdownServer(server, 5*time.Second)
 	os.Exit(exitCode)
 }
+

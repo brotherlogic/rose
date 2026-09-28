@@ -3,14 +3,19 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/brotherlogic/rose/internal/github"
+	"github.com/brotherlogic/rose/internal/metrics"
 	"github.com/brotherlogic/rose/internal/photos"
 	"github.com/brotherlogic/rose/internal/storage"
 	gallery "github.com/brotherlogic/rose/proto"
@@ -716,4 +721,154 @@ func TestRun_ContextCancelled_FilesIssue(t *testing.T) {
 		t.Errorf("expected decoupled context to have a timeout deadline")
 	}
 }
+
+func TestConfigParsing_MetricsPort(t *testing.T) {
+	t.Run("DefaultValue", func(t *testing.T) {
+		t.Setenv("PHOTOS_ALBUM_URL", "https://photos.app.goo.gl/sample")
+		os.Unsetenv("METRICS_PORT")
+
+		cfg, err := parseConfig([]string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.MetricsPort != 8081 {
+			t.Errorf("expected default MetricsPort 8081, got %d", cfg.MetricsPort)
+		}
+	})
+
+	t.Run("EnvVariable", func(t *testing.T) {
+		t.Setenv("PHOTOS_ALBUM_URL", "https://photos.app.goo.gl/sample")
+		t.Setenv("METRICS_PORT", "9090")
+
+		cfg, err := parseConfig([]string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.MetricsPort != 9090 {
+			t.Errorf("expected MetricsPort 9090 from env, got %d", cfg.MetricsPort)
+		}
+	})
+
+	t.Run("FlagOverridesEnv", func(t *testing.T) {
+		t.Setenv("PHOTOS_ALBUM_URL", "https://photos.app.goo.gl/sample")
+		t.Setenv("METRICS_PORT", "9090")
+
+		cfg, err := parseConfig([]string{"-metrics-port", "9191"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.MetricsPort != 9191 {
+			t.Errorf("expected MetricsPort 9191 from flag, got %d", cfg.MetricsPort)
+		}
+	})
+
+	t.Run("InvalidPort_OutOfRangeLow", func(t *testing.T) {
+		t.Setenv("PHOTOS_ALBUM_URL", "https://photos.app.goo.gl/sample")
+
+		_, err := parseConfig([]string{"-metrics-port", "0"})
+		if err == nil {
+			t.Fatalf("expected error for port 0, got nil")
+		}
+	})
+
+	t.Run("InvalidPort_OutOfRangeHigh", func(t *testing.T) {
+		t.Setenv("PHOTOS_ALBUM_URL", "https://photos.app.goo.gl/sample")
+
+		_, err := parseConfig([]string{"-metrics-port", "65536"})
+		if err == nil {
+			t.Fatalf("expected error for port 65536, got nil")
+		}
+	})
+
+	t.Run("InvalidPort_Negative", func(t *testing.T) {
+		t.Setenv("PHOTOS_ALBUM_URL", "https://photos.app.goo.gl/sample")
+
+		_, err := parseConfig([]string{"-metrics-port", "-1"})
+		if err == nil {
+			t.Fatalf("expected error for negative port, got nil")
+		}
+	})
+
+	t.Run("InvalidPort_NonNumericEnv", func(t *testing.T) {
+		t.Setenv("PHOTOS_ALBUM_URL", "https://photos.app.goo.gl/sample")
+		t.Setenv("METRICS_PORT", "not-a-port")
+
+		_, err := parseConfig([]string{})
+		if err == nil {
+			t.Fatalf("expected error for non-numeric METRICS_PORT, got nil")
+		}
+	})
+}
+
+func TestFailFastMetricsPortBinding(t *testing.T) {
+	// First bind a port locally to simulate port conflict
+	occupiedListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to bind test listener: %v", err)
+	}
+	defer occupiedListener.Close()
+
+	occupiedPort := occupiedListener.Addr().(*net.TCPAddr).Port
+
+	m := metrics.NewMetrics()
+	// Attempt to start metrics server on the occupied port
+	listener, server, err := startMetricsServer(occupiedPort, m.Handler())
+	if err == nil {
+		if listener != nil {
+			_ = listener.Close()
+		}
+		if server != nil {
+			_ = server.Close()
+		}
+		t.Fatalf("expected error when port %d is already bound, got nil", occupiedPort)
+	}
+}
+
+func TestStartMetricsServer_ServingAndGracefulShutdown(t *testing.T) {
+	m := metrics.NewMetrics()
+	listener, server, err := startMetricsServer(0, m.Handler())
+	if err != nil {
+		t.Fatalf("failed to start metrics server: %v", err)
+	}
+	defer func() {
+		_ = shutdownServer(server, 2*time.Second)
+	}()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", port))
+	if err != nil {
+		t.Fatalf("failed to query /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestScrapeGracePeriod_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately to test fail-fast abort of 60s grace period
+	cancel()
+
+	start := time.Now()
+	runGracePeriod(ctx, 60*time.Second)
+	elapsed := time.Since(start)
+
+	if elapsed >= 2*time.Second {
+		t.Errorf("grace period took %v to abort on cancelled context, expected < 2s", elapsed)
+	}
+}
+
+func TestScrapeGracePeriod_CompletesOnDuration(t *testing.T) {
+	ctx := context.Background()
+	start := time.Now()
+	runGracePeriod(ctx, 20*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if elapsed < 20*time.Millisecond {
+		t.Errorf("expected grace period to wait for full duration, finished in %v", elapsed)
+	}
+}
+
 
