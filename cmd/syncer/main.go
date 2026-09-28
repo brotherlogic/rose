@@ -127,8 +127,19 @@ func reportFailure(reporter github.IssueReporter, report github.FailureReport) {
 }
 
 // Run executes a single synchronization pass over photos from the shared album.
-func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoService, visionSvc VisionService, store *storage.Store, reporter github.IssueReporter) int {
+func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoService, visionSvc VisionService, store *storage.Store, reporter github.IssueReporter, m *metrics.Metrics) int {
+	if m == nil {
+		m = metrics.NewMetrics()
+	}
+
+	startTime := time.Now()
+	defer func() {
+		m.UpdateStorageBytes(storagePath)
+		m.SetSyncDuration(time.Since(startTime))
+	}()
+
 	if err := os.MkdirAll(storagePath, 0755); err != nil {
+		m.IncSyncErrors()
 		log.Printf("failed to ensure storage directory %s: %v", storagePath, err)
 		reportFailure(reporter, github.FailureReport{
 			Stage:            "Run Initialization",
@@ -144,6 +155,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 
 	photosList, err := photoSvc.FetchPhotos(ctx, albumURL)
 	if err != nil {
+		m.IncSyncErrors()
 		log.Printf("failed to fetch photos: %v", err)
 		stage := "Album Fetch"
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
@@ -161,6 +173,8 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		return 1
 	}
 
+	m.SetDiscoveredPhotos(len(photosList))
+
 	fetchedCount := len(photosList)
 	log.Printf("Fetched %d photo(s) to process", fetchedCount)
 	if fetchedCount == 0 {
@@ -170,6 +184,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 	var attemptedCount, successCount, errorCount int
 	for _, photo := range photosList {
 		if ctx.Err() != nil {
+			m.IncSyncErrors()
 			log.Printf("Context cancelled: %v", ctx.Err())
 			reportFailure(reporter, github.FailureReport{
 				Stage:            "Context Cancelled",
@@ -185,6 +200,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 
 		processed, err := store.IsPhotoProcessed(photo.ID)
 		if err != nil {
+			m.IncSyncErrors()
 			log.Printf("Error checking sync status for %s: %v", photo.ID, err)
 			attemptedCount++
 			errorCount++
@@ -200,6 +216,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		// Stream raw image bytes
 		imgBytes, err := photoSvc.DownloadImage(ctx, photo.DownloadURL)
 		if err != nil {
+			m.IncSyncErrors()
 			if isRateLimitError(err) {
 				log.Printf("Rate limit encountered downloading %s: %v, aborting", photo.ID, err)
 				reportFailure(reporter, github.FailureReport{
@@ -220,6 +237,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 
 		// Persist raw image to disk
 		if err := store.WriteImage(photo.ID, imgBytes); err != nil {
+			m.IncSyncErrors()
 			log.Printf("Error writing raw image %s: %v, aborting immediately", photo.ID, err)
 			reportFailure(reporter, github.FailureReport{
 				Stage:            "Storage Persistence",
@@ -232,10 +250,12 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			})
 			return 1
 		}
+		m.IncPhotosDownloaded()
 
 		// Pass raw image bytes to vision service
 		desc, theme, err := visionSvc.AnalyzeImage(ctx, imgBytes)
 		if err != nil {
+			m.IncSyncErrors()
 			if isRateLimitError(err) {
 				log.Printf("Rate limit encountered during vision analysis for %s: %v, aborting", photo.ID, err)
 				reportFailure(reporter, github.FailureReport{
@@ -265,12 +285,14 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 
 		protoData, err := proto.Marshal(artwork)
 		if err != nil {
+			m.IncSyncErrors()
 			log.Printf("Error marshaling proto for %s: %v", photo.ID, err)
 			errorCount++
 			continue
 		}
 
 		if err := store.WriteArtworkProto(photo.ID, protoData); err != nil {
+			m.IncSyncErrors()
 			log.Printf("Error writing artwork proto for %s: %v, aborting immediately", photo.ID, err)
 			reportFailure(reporter, github.FailureReport{
 				Stage:            "Storage Persistence",
@@ -285,6 +307,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		}
 
 		if err := store.SaveProcessedPhoto(photo.ID); err != nil {
+			m.IncSyncErrors()
 			log.Printf("Error saving processed state for %s: %v, aborting immediately", photo.ID, err)
 			reportFailure(reporter, github.FailureReport{
 				Stage:            "Storage Persistence",
@@ -392,7 +415,7 @@ func main() {
 		reporter = github.NewClient(cfg.GitHubToken)
 	}
 
-	exitCode := Run(ctx, cfg.AlbumURL, cfg.StoragePath, photoSvc, visionSvc, store, reporter)
+	exitCode := Run(ctx, cfg.AlbumURL, cfg.StoragePath, photoSvc, visionSvc, store, reporter, m)
 
 	runGracePeriod(ctx, 60*time.Second)
 
