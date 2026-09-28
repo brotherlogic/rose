@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -12,7 +13,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/HugoSmits86/nativewebp"
 	"github.com/brotherlogic/rose/internal/github"
+	"github.com/brotherlogic/rose/internal/metrics"
 	"github.com/brotherlogic/rose/internal/photos"
 	"github.com/brotherlogic/rose/internal/storage"
 	gallery "github.com/brotherlogic/rose/proto"
@@ -113,9 +116,10 @@ AF_initDataCallback({
 	albumURL := "https://photos.app.goo.gl/shortlink"
 
 	mockReporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
 
 	// 1. Initial Synchronization Pass
-	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, mockReporter, nil)
+	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, mockReporter, m)
 	if exitCode != 0 {
 		t.Fatalf("first Run pass failed with exit code %d", exitCode)
 	}
@@ -175,12 +179,46 @@ AF_initDataCallback({
 		if artwork.GetThemeId() != expectedTheme {
 			t.Errorf("artwork ThemeId mismatch: got %s, want %s", artwork.GetThemeId(), expectedTheme)
 		}
+		// Verify thumbnail file in thumbnails/
+		thumbPath := filepath.Join(tempDir, "thumbnails", id+".webp")
+		thumbBytes, err := os.ReadFile(thumbPath)
+		if err != nil {
+			t.Fatalf("failed to read thumbnail file %s: %v", thumbPath, err)
+		}
+		if len(thumbBytes) < 12 || string(thumbBytes[0:4]) != "RIFF" || string(thumbBytes[8:12]) != "WEBP" {
+			t.Errorf("thumbnail %s does not have valid WebP RIFF header", id)
+		}
+		thumbCfg, err := nativewebp.DecodeConfig(bytes.NewReader(thumbBytes))
+		if err != nil {
+			t.Fatalf("failed to decode WebP thumbnail config for %s: %v", id, err)
+		}
+		if thumbCfg.Width > 600 || thumbCfg.Height > 600 {
+			t.Errorf("thumbnail %s exceeds 600x600 bounding box: %dx%d", id, thumbCfg.Width, thumbCfg.Height)
+		}
+		if id == "photo-e2e-1" && (thumbCfg.Width != 600 || thumbCfg.Height != 450) {
+			t.Errorf("expected photo-e2e-1 thumbnail dimensions 600x450, got %dx%d", thumbCfg.Width, thumbCfg.Height)
+		}
+		if id == "photo-e2e-2" && (thumbCfg.Width != 600 || thumbCfg.Height != 400) {
+			t.Errorf("expected photo-e2e-2 thumbnail dimensions 600x400, got %dx%d", thumbCfg.Width, thumbCfg.Height)
+		}
+
 		if artwork.GetImagePath() != "images/"+id+".jpg" {
 			t.Errorf("artwork ImagePath mismatch: got %s, want images/%s.jpg", artwork.GetImagePath(), id)
 		}
 		if artwork.GetTimestamp() <= 0 {
 			t.Errorf("expected positive timestamp on artwork %s", id)
 		}
+	}
+
+	values, storageBytes := gatherMetricValues(t, m)
+	if values["rose_syncer_thumbnails_generated_total"] != 2 {
+		t.Errorf("expected 2 thumbnails generated metric, got %f", values["rose_syncer_thumbnails_generated_total"])
+	}
+	if storageBytes["images"] <= 0 {
+		t.Errorf("expected rose_syncer_storage_bytes{type=\"images\"} > 0, got %f", storageBytes["images"])
+	}
+	if storageBytes["thumbnails"] <= 0 {
+		t.Errorf("expected rose_syncer_storage_bytes{type=\"thumbnails\"} > 0, got %f", storageBytes["thumbnails"])
 	}
 
 	// 3. Verify .sync-state.json
@@ -198,7 +236,7 @@ AF_initDataCallback({
 	}
 
 	// 4. Verify Idempotency (Second Pass)
-	pass2ExitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, mockReporter, nil)
+	pass2ExitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, mockReporter, m)
 	if pass2ExitCode != 0 {
 		t.Fatalf("second Run pass failed with exit code %d", pass2ExitCode)
 	}
@@ -215,6 +253,12 @@ AF_initDataCallback({
 	// Zero redundant vision calls
 	if visionSvc.callCount != 2 {
 		t.Errorf("expected zero redundant vision calls (still 2), but got %d", visionSvc.callCount)
+	}
+
+	// Verify metrics unchanged after second idempotent pass
+	valuesPass2, _ := gatherMetricValues(t, m)
+	if valuesPass2["rose_syncer_thumbnails_generated_total"] != 2 {
+		t.Errorf("expected thumbnails generated metric to remain 2 after second pass, got %f", valuesPass2["rose_syncer_thumbnails_generated_total"])
 	}
 }
 
