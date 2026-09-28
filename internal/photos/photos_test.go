@@ -2,6 +2,7 @@ package photos
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -344,3 +345,233 @@ func TestDownloadImage_SuccessAndFailures(t *testing.T) {
 		t.Fatal("expected error on cancelled context, got nil")
 	}
 }
+
+func TestExtractContinuationToken_Success(t *testing.T) {
+	// Direct array payload
+	rawJSON := `[
+		null,
+		[
+			["photo-id-1", ["https://lh3.googleusercontent.com/pw/photo1_base", 1920, 1080]]
+		],
+		"token-abc-123"
+	]`
+	var raw any
+	if err := json.Unmarshal([]byte(rawJSON), &raw); err != nil {
+		t.Fatalf("failed to unmarshal test JSON: %v", err)
+	}
+
+	token := extractContinuationToken(raw)
+	if token != "token-abc-123" {
+		t.Fatalf("expected token %q, got %q", "token-abc-123", token)
+	}
+
+	// Wrapped payload in callback map
+	wrappedJSON := `{
+		"key": "ds:1",
+		"data": [
+			null,
+			[
+				["photo-id-2", ["https://lh3.googleusercontent.com/pw/photo2_base", 800, 600]]
+			],
+			"token-wrapped-456"
+		]
+	}`
+	var wrapped any
+	if err := json.Unmarshal([]byte(wrappedJSON), &wrapped); err != nil {
+		t.Fatalf("failed to unmarshal test JSON: %v", err)
+	}
+	tokenWrapped := extractContinuationToken(wrapped)
+	if tokenWrapped != "token-wrapped-456" {
+		t.Fatalf("expected token %q, got %q", "token-wrapped-456", tokenWrapped)
+	}
+}
+
+func TestExtractContinuationToken_Missing(t *testing.T) {
+	// Case 1: Array without token element
+	rawJSON := `[
+		null,
+		[
+			["photo-id-1", ["https://lh3.googleusercontent.com/pw/photo1_base", 1920, 1080]]
+		]
+	]`
+	var raw any
+	if err := json.Unmarshal([]byte(rawJSON), &raw); err != nil {
+		t.Fatalf("failed to unmarshal test JSON: %v", err)
+	}
+	token := extractContinuationToken(raw)
+	if token != "" {
+		t.Fatalf("expected empty token, got %q", token)
+	}
+
+	// Case 2: Array with null token element
+	rawNullJSON := `[
+		null,
+		[
+			["photo-id-1", ["https://lh3.googleusercontent.com/pw/photo1_base", 1920, 1080]]
+		],
+		null
+	]`
+	var rawNull any
+	if err := json.Unmarshal([]byte(rawNullJSON), &rawNull); err != nil {
+		t.Fatalf("failed to unmarshal test JSON: %v", err)
+	}
+	tokenNull := extractContinuationToken(rawNull)
+	if tokenNull != "" {
+		t.Fatalf("expected empty token for null, got %q", tokenNull)
+	}
+}
+
+func TestFetchContinuationBatch_Success(t *testing.T) {
+	mockBatchJSON := `[
+		null,
+		[
+			["photo-batch-1", ["https://lh3.googleusercontent.com/pw/photo_batch1_base", 1920, 1080]],
+			["video-batch-1", ["https://lh3.googleusercontent.com/pw/video_batch1_base", 1920, 1080], null, null, null, null, null, null, null, null, null, null, null, null, null, ["video/mp4"]],
+			["photo-batch-2", ["https://lh3.googleusercontent.com/pw/photo_batch2_base=w800-h600", 800, 600]]
+		],
+		"next-token-789"
+	]`
+	envelopeJSON, err := json.Marshal([][]any{
+		{"wrb.fr", albumContinuationRPCID, mockBatchJSON, nil, nil, nil, "generic"},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal envelope: %v", err)
+	}
+	mockResponse := ")]}'\n\n" + string(envelopeJSON)
+
+	receivedReq := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedReq = true
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST method, got %s", r.Method)
+		}
+		if r.URL.Path != batchExecutePath {
+			t.Errorf("expected path %s, got %s", batchExecutePath, r.URL.Path)
+		}
+		if !strings.Contains(r.Header.Get("User-Agent"), "Mozilla/5.0") {
+			t.Errorf("expected browser User-Agent, got %s", r.Header.Get("User-Agent"))
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("failed to parse form body: %v", err)
+		}
+		reqVal := r.PostForm.Get("f.req")
+		if !strings.Contains(reqVal, albumContinuationRPCID) || !strings.Contains(reqVal, "token-start") {
+			t.Errorf("f.req missing rpcid or token: %s", reqVal)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(mockResponse))
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	photos, nextToken, err := svc.fetchContinuationBatch(context.Background(), "photos.google.com", "token-start")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !receivedReq {
+		t.Fatal("expected mock server to receive request")
+	}
+
+	if len(photos) != 2 {
+		t.Fatalf("expected 2 photos (video filtered), got %d: %+v", len(photos), photos)
+	}
+	if photos[0].ID != "photo-batch-1" || !strings.HasSuffix(photos[0].DownloadURL, "=w0-h0") {
+		t.Errorf("unexpected photo[0]: %+v", photos[0])
+	}
+	if photos[1].ID != "photo-batch-2" || !strings.HasSuffix(photos[1].DownloadURL, "=w0-h0") {
+		t.Errorf("unexpected photo[1]: %+v", photos[1])
+	}
+	if nextToken != "next-token-789" {
+		t.Errorf("expected next token %q, got %q", "next-token-789", nextToken)
+	}
+}
+
+func TestFetchContinuationBatch_RateLimited(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	photos, nextToken, err := svc.fetchContinuationBatch(context.Background(), "photos.google.com", "token-ratelimit")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited, got: %v", err)
+	}
+	if len(photos) != 0 || nextToken != "" {
+		t.Fatalf("expected empty return on rate limit, got photos=%v, token=%q", photos, nextToken)
+	}
+}
+
+func TestFetchContinuationBatch_MalformedPayload(t *testing.T) {
+	tests := []struct {
+		name         string
+		responseBody string
+	}{
+		{
+			name:         "corrupted XSSI guard prefix",
+			responseBody: "CORRUPTED_PREFIX\n[[1, 2, 3]]",
+		},
+		{
+			name:         "malformed JSON after valid prefix",
+			responseBody: ")]}'\n\n{invalid json content",
+		},
+		{
+			name:         "empty body without XSSI prefix",
+			responseBody: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tt.responseBody))
+			}))
+			defer ts.Close()
+
+			svc := newTestService(ts.Listener.Addr().String())
+			photos, nextToken, err := svc.fetchContinuationBatch(context.Background(), "photos.google.com", "token-malformed")
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tt.name)
+			}
+			if len(photos) != 0 || nextToken != "" {
+				t.Fatalf("expected empty photos and token on error, got photos=%v, token=%q", photos, nextToken)
+			}
+		})
+	}
+}
+
+func TestFetchContinuationBatch_EmptyBatch(t *testing.T) {
+	emptyBatchJSON := `[null, [], null]`
+	envelopeJSON, err := json.Marshal([][]any{
+		{"wrb.fr", albumContinuationRPCID, emptyBatchJSON, nil, nil, nil, "generic"},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal envelope: %v", err)
+	}
+	mockResponse := ")]}'\n\n" + string(envelopeJSON)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(mockResponse))
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	photos, nextToken, err := svc.fetchContinuationBatch(context.Background(), "photos.google.com", "token-empty")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if photos == nil || len(photos) != 0 {
+		t.Fatalf("expected empty non-nil slice, got: %+v", photos)
+	}
+	if nextToken != "" {
+		t.Fatalf("expected empty token, got: %q", nextToken)
+	}
+}
+
