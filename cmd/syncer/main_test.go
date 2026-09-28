@@ -304,7 +304,7 @@ func TestErrorContinuation(t *testing.T) {
 }
 
 func TestImmediateAbortOnRateLimit(t *testing.T) {
-	t.Run("FetchPhotosRateLimited", func(t *testing.T) {
+	t.Run("FetchPhotosRateLimitedGracefulExit", func(t *testing.T) {
 		tempDir := t.TempDir()
 		store := storage.NewStore(tempDir)
 		photoSvc := &mockPhotoService{
@@ -313,8 +313,8 @@ func TestImmediateAbortOnRateLimit(t *testing.T) {
 		visionSvc := &mockVisionService{}
 
 		code := Run(context.Background(), "https://photos.app.goo.gl/samplealbum", tempDir, photoSvc, visionSvc, store, nil, nil)
-		if code != 1 {
-			t.Errorf("expected exit code 1 on fetch rate limit, got %d", code)
+		if code != 0 {
+			t.Errorf("expected exit code 0 on fetch rate limit graceful exit, got %d", code)
 		}
 	})
 
@@ -1264,6 +1264,113 @@ func (c *customPhotoService) DownloadImage(ctx context.Context, downloadURL stri
 	}
 	return []byte("dummy"), nil
 }
+
+func TestRun_LargeAlbumPaginationIntegration(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(10, 10)
+
+	const totalPhotos = 1200
+	const preProcessed = 200
+
+	photoList := make([]photos.Photo, totalPhotos)
+	for i := 0; i < totalPhotos; i++ {
+		id := fmt.Sprintf("large-photo-%04d", i)
+		photoList[i] = photos.Photo{
+			ID:          id,
+			DownloadURL: fmt.Sprintf("https://photos.google.com/album/%s=w0-h0", id),
+		}
+	}
+
+	// Seed 200 photo IDs as already processed in .sync-state.json
+	for i := 0; i < preProcessed; i++ {
+		if err := store.SaveProcessedPhoto(photoList[i].ID); err != nil {
+			t.Fatalf("failed to seed processed photo %s: %v", photoList[i].ID, err)
+		}
+	}
+
+	photoSvc := &mockPhotoService{
+		photos:         photoList,
+		downloadedData: rawJPEG,
+	}
+	visionSvc := &mockVisionService{
+		analyzeFunc: func(ctx context.Context, img []byte) (string, string, error) {
+			return "Large album landscape photo", "Nature", nil
+		},
+	}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	albumURL := "https://photos.app.goo.gl/large-album-1200"
+	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, reporter, m)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	// Assert no failure issues created
+	if reporter.createCalls.Load() != 0 {
+		t.Errorf("expected 0 failure issues created, got %d", reporter.createCalls.Load())
+	}
+
+	// Assert m.SetDiscoveredPhotos(1200) is recorded (verify gauge value via metrics exposition)
+	values, _ := gatherMetricValues(t, m)
+	if got := values["rose_syncer_photos_discovered_total"]; got != float64(totalPhotos) {
+		t.Errorf("expected rose_syncer_photos_discovered_total == %d, got %f", totalPhotos, got)
+	}
+
+	// Assert the 200 already-processed photos are skipped and the remaining 1,000 photos are ingested
+	expectedIngested := totalPhotos - preProcessed
+	if len(photoSvc.downloadCalls) != expectedIngested {
+		t.Errorf("expected %d download calls, got %d", expectedIngested, len(photoSvc.downloadCalls))
+	}
+	if visionSvc.callCount != expectedIngested {
+		t.Errorf("expected %d vision service calls, got %d", expectedIngested, visionSvc.callCount)
+	}
+
+	if got := values["rose_syncer_photos_downloaded_total"]; got != float64(expectedIngested) {
+		t.Errorf("expected %d photos downloaded metric, got %f", expectedIngested, got)
+	}
+	if got := values["rose_syncer_thumbnails_generated_total"]; got != float64(expectedIngested) {
+		t.Errorf("expected %d thumbnails generated metric, got %f", expectedIngested, got)
+	}
+	if got := values["rose_syncer_sync_errors_total"]; got != 0 {
+		t.Errorf("expected 0 sync errors, got %f", got)
+	}
+
+	// Verify all 1,200 photos are now marked as processed
+	for _, p := range photoList {
+		processed, err := store.IsPhotoProcessed(p.ID)
+		if err != nil {
+			t.Fatalf("error checking processed state for %s: %v", p.ID, err)
+		}
+		if !processed {
+			t.Fatalf("expected photo %s to be marked processed", p.ID)
+		}
+	}
+}
+
+func TestRun_LargeAlbumRateLimitGracefulExit(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoSvc := &mockPhotoService{
+		fetchErr: photos.ErrRateLimited,
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	albumURL := "https://photos.app.goo.gl/large-album-ratelimited"
+	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, reporter, m)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 on rate limit graceful exit, got %d", exitCode)
+	}
+
+	// Assert no failure issues created
+	if reporter.createCalls.Load() != 0 {
+		t.Errorf("expected 0 CreateFailureIssue calls, got %d", reporter.createCalls.Load())
+	}
+}
+
 
 
 

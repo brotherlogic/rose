@@ -189,6 +189,10 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 
 	photosList, err := photoSvc.FetchPhotos(ctx, albumURL)
 	if err != nil {
+		if isRateLimitError(err) {
+			log.Printf("Rate limit encountered during album fetch: %v, exiting gracefully", err)
+			return 0
+		}
 		m.IncSyncErrors()
 		log.Printf("failed to fetch photos: %v", err)
 		stage := "Album Fetch"
