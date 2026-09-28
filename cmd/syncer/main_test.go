@@ -197,6 +197,9 @@ func TestFullSyncPass(t *testing.T) {
 		if artwork.GetImagePath() != "images/"+id+".jpg" {
 			t.Errorf("expected image_path images/%s.jpg, got %s", id, artwork.GetImagePath())
 		}
+		if artwork.GetThumbnailPath() != "thumbnails/"+id+".webp" {
+			t.Errorf("expected thumbnail_path thumbnails/%s.webp, got %s", id, artwork.GetThumbnailPath())
+		}
 		if artwork.GetTimestamp() <= 0 {
 			t.Errorf("expected positive timestamp, got %d", artwork.GetTimestamp())
 		}
@@ -1370,6 +1373,87 @@ func TestRun_LargeAlbumRateLimitGracefulExit(t *testing.T) {
 		t.Errorf("expected 0 CreateFailureIssue calls, got %d", reporter.createCalls.Load())
 	}
 }
+
+func TestRun_ThumbnailPath_Serialization(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	validJPEG := createTestJPEG(400, 300)
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "photo-thumb-test", DownloadURL: "https://photos.google.com/p1"},
+		},
+		downloadedData: validJPEG,
+	}
+	visionSvc := &mockVisionService{}
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/test", tempDir, photoSvc, visionSvc, store, nil, nil)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	protoPath := filepath.Join(tempDir, "photo-thumb-test.proto.bin")
+	protoBytes, err := os.ReadFile(protoPath)
+	if err != nil {
+		t.Fatalf("failed to read proto file %s: %v", protoPath, err)
+	}
+	var artwork gallery.Artwork
+	if err := proto.Unmarshal(protoBytes, &artwork); err != nil {
+		t.Fatalf("failed to unmarshal proto: %v", err)
+	}
+
+	if artwork.GetThumbnailPath() != "thumbnails/photo-thumb-test.webp" {
+		t.Errorf("expected ThumbnailPath 'thumbnails/photo-thumb-test.webp', got %q", artwork.GetThumbnailPath())
+	}
+}
+
+func TestRun_ThumbnailPath_Fallback(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+
+	t.Run("NilStoreFallback", func(t *testing.T) {
+		artwork := buildArtwork("photo-nil-store", "A description", "A theme", nil)
+		if artwork.GetThumbnailPath() != "" {
+			t.Errorf("expected empty ThumbnailPath when store is nil, got %q", artwork.GetThumbnailPath())
+		}
+	})
+
+	t.Run("MissingThumbnailFileFallback", func(t *testing.T) {
+		artwork := buildArtwork("missing-thumb-photo", "A description", "A theme", store)
+		if artwork.GetThumbnailPath() != "" {
+			t.Errorf("expected empty ThumbnailPath when thumbnail file does not exist, got %q", artwork.GetThumbnailPath())
+		}
+	})
+
+	t.Run("DirectoryInsteadOfFileFallback", func(t *testing.T) {
+		dirPath := filepath.Join(tempDir, "thumbnails", "dir-photo.webp")
+		if err := os.MkdirAll(dirPath, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+		artwork := buildArtwork("dir-photo", "A description", "A theme", store)
+		if artwork.GetThumbnailPath() != "" {
+			t.Errorf("expected empty ThumbnailPath when target is a directory, got %q", artwork.GetThumbnailPath())
+		}
+	})
+
+	t.Run("ExistingThumbnailFilePopulates", func(t *testing.T) {
+		thumbnailsDir := filepath.Join(tempDir, "thumbnails")
+		if err := os.MkdirAll(thumbnailsDir, 0755); err != nil {
+			t.Fatalf("failed to create thumbnails dir: %v", err)
+		}
+		thumbFile := filepath.Join(thumbnailsDir, "existing-photo.webp")
+		if err := os.WriteFile(thumbFile, []byte("fake-webp"), 0644); err != nil {
+			t.Fatalf("failed to create fake thumbnail: %v", err)
+		}
+
+		artwork := buildArtwork("existing-photo", "A description", "A theme", store)
+		if artwork.GetThumbnailPath() != "thumbnails/existing-photo.webp" {
+			t.Errorf("expected 'thumbnails/existing-photo.webp', got %q", artwork.GetThumbnailPath())
+		}
+	})
+}
+
+
 
 
 
