@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 	"github.com/brotherlogic/rose/internal/metrics"
 	"github.com/brotherlogic/rose/internal/photos"
 	"github.com/brotherlogic/rose/internal/storage"
+	"github.com/brotherlogic/rose/internal/thumbnail"
 	"github.com/brotherlogic/rose/internal/vision"
 	gallery "github.com/brotherlogic/rose/proto"
 	"google.golang.org/protobuf/proto"
@@ -153,6 +155,38 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		return 1
 	}
 
+	imagesDir := filepath.Join(storagePath, "images")
+	if err := os.MkdirAll(imagesDir, 0755); err != nil {
+		m.IncSyncErrors()
+		log.Printf("failed to ensure images directory %s: %v", imagesDir, err)
+		reportFailure(reporter, github.FailureReport{
+			Stage:            "Run Initialization",
+			Timestamp:        time.Now().UTC(),
+			Error:            err,
+			PhotosFetched:    0,
+			PhotosAttempted:  0,
+			PhotosSuccessful: 0,
+			LogSummary:       fmt.Sprintf("failed to ensure images directory %s: %v", imagesDir, err),
+		})
+		return 1
+	}
+
+	thumbnailsDir := filepath.Join(storagePath, "thumbnails")
+	if err := os.MkdirAll(thumbnailsDir, 0755); err != nil {
+		m.IncSyncErrors()
+		log.Printf("failed to ensure thumbnails directory %s: %v", thumbnailsDir, err)
+		reportFailure(reporter, github.FailureReport{
+			Stage:            "Run Initialization",
+			Timestamp:        time.Now().UTC(),
+			Error:            err,
+			PhotosFetched:    0,
+			PhotosAttempted:  0,
+			PhotosSuccessful: 0,
+			LogSummary:       fmt.Sprintf("failed to ensure thumbnails directory %s: %v", thumbnailsDir, err),
+		})
+		return 1
+	}
+
 	photosList, err := photoSvc.FetchPhotos(ctx, albumURL)
 	if err != nil {
 		m.IncSyncErrors()
@@ -252,6 +286,30 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		}
 		m.IncPhotosDownloaded()
 
+		thumbBytes, err := thumbnail.GenerateThumbnail(imgBytes)
+		if err != nil {
+			m.IncSyncErrors()
+			log.Printf("Error generating thumbnail for %s: %v", photo.ID, err)
+			errorCount++
+			continue
+		}
+
+		if err := store.WriteThumbnail(photo.ID, thumbBytes); err != nil {
+			m.IncSyncErrors()
+			log.Printf("Error writing thumbnail %s: %v, aborting immediately", photo.ID, err)
+			reportFailure(reporter, github.FailureReport{
+				Stage:            "Storage Persistence",
+				Timestamp:        time.Now().UTC(),
+				Error:            err,
+				PhotosFetched:    fetchedCount,
+				PhotosAttempted:  attemptedCount,
+				PhotosSuccessful: successCount,
+				LogSummary:       fmt.Sprintf("error writing thumbnail %s: %v", photo.ID, err),
+			})
+			return 1
+		}
+		m.IncThumbnailsGenerated()
+
 		// Pass raw image bytes to vision service
 		desc, theme, err := visionSvc.AnalyzeImage(ctx, imgBytes)
 		if err != nil {
@@ -280,7 +338,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			Description: desc,
 			ThemeId:     theme,
 			Timestamp:   time.Now().Unix(),
-			ImagePath:   photo.ID + ".jpg",
+			ImagePath:   "images/" + photo.ID + ".jpg",
 		}
 
 		protoData, err := proto.Marshal(artwork)

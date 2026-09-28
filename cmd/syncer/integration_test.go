@@ -55,8 +55,8 @@ AF_initDataCallback({
 </body>
 </html>`
 
-	rawImg1 := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'P', 'E', 'G', '1'}
-	rawImg2 := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'P', 'E', 'G', '2'}
+	rawImg1 := createTestJPEG(800, 600)
+	rawImg2 := createTestJPEG(600, 400)
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -136,7 +136,7 @@ AF_initDataCallback({
 
 	// 2. Verify Filesystem Artifacts
 	for _, id := range []string{"photo-e2e-1", "photo-e2e-2"} {
-		imgPath := filepath.Join(tempDir, id+".jpg")
+		imgPath := filepath.Join(tempDir, "images", id+".jpg")
 		imgData, err := os.ReadFile(imgPath)
 		if err != nil {
 			t.Fatalf("failed to read raw image %s: %v", imgPath, err)
@@ -175,8 +175,8 @@ AF_initDataCallback({
 		if artwork.GetThemeId() != expectedTheme {
 			t.Errorf("artwork ThemeId mismatch: got %s, want %s", artwork.GetThemeId(), expectedTheme)
 		}
-		if artwork.GetImagePath() != id+".jpg" {
-			t.Errorf("artwork ImagePath mismatch: got %s, want %s.jpg", artwork.GetImagePath(), id)
+		if artwork.GetImagePath() != "images/"+id+".jpg" {
+			t.Errorf("artwork ImagePath mismatch: got %s, want images/%s.jpg", artwork.GetImagePath(), id)
 		}
 		if artwork.GetTimestamp() <= 0 {
 			t.Errorf("expected positive timestamp on artwork %s", id)
@@ -254,7 +254,7 @@ AF_initDataCallback({
 </body>
 </html>`
 
-	rawImg := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'P', 'E', 'G'}
+	rawImg := createTestJPEG(400, 400)
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

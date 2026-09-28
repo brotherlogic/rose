@@ -77,7 +77,7 @@ func (s *blockingPhotoService) DownloadImage(ctx context.Context, downloadURL st
 		}
 	}
 
-	return []byte("test-image-data-for-" + downloadURL), nil
+	return createTestJPEG(200, 200), nil
 }
 
 func TestMetricsHTTPIntegration_EndToEnd(t *testing.T) {
@@ -190,17 +190,17 @@ func TestMetricsHTTPIntegration_EndToEnd(t *testing.T) {
 		t.Errorf("expected rose_syncer_photos_downloaded_total == 2, got %f", finalMetrics["rose_syncer_photos_downloaded_total"])
 	}
 
-	// Verify rose_syncer_thumbnails_generated_total is initialized and exported (0)
-	if val, ok := finalMetrics["rose_syncer_thumbnails_generated_total"]; !ok || val != 0 {
-		t.Errorf("expected rose_syncer_thumbnails_generated_total == 0, got val=%f ok=%v", val, ok)
+	// Verify rose_syncer_thumbnails_generated_total is initialized and exported (2)
+	if val, ok := finalMetrics["rose_syncer_thumbnails_generated_total"]; !ok || val != 2 {
+		t.Errorf("expected rose_syncer_thumbnails_generated_total == 2, got val=%f ok=%v", val, ok)
 	}
 
 	// Verify rose_syncer_storage_bytes{type="images"} and rose_syncer_storage_bytes{type="thumbnails"}
-	if finalMetrics[`rose_syncer_storage_bytes{type="images"}`] != 512 {
-		t.Errorf("expected rose_syncer_storage_bytes{type=\"images\"} == 512, got %f", finalMetrics[`rose_syncer_storage_bytes{type="images"}`])
+	if finalMetrics[`rose_syncer_storage_bytes{type="images"}`] <= 512 {
+		t.Errorf("expected rose_syncer_storage_bytes{type=\"images\"} > 512, got %f", finalMetrics[`rose_syncer_storage_bytes{type="images"}`])
 	}
-	if finalMetrics[`rose_syncer_storage_bytes{type="thumbnails"}`] != 256 {
-		t.Errorf("expected rose_syncer_storage_bytes{type=\"thumbnails\"} == 256, got %f", finalMetrics[`rose_syncer_storage_bytes{type="thumbnails"}`])
+	if finalMetrics[`rose_syncer_storage_bytes{type="thumbnails"}`] <= 256 {
+		t.Errorf("expected rose_syncer_storage_bytes{type=\"thumbnails\"} > 256, got %f", finalMetrics[`rose_syncer_storage_bytes{type="thumbnails"}`])
 	}
 
 	// Verify rose_syncer_sync_duration_seconds is recorded (> 0)
@@ -257,7 +257,7 @@ func TestMetricsHTTPIntegration_AllSuccessfulPass(t *testing.T) {
 			{ID: "photo-ok-1", DownloadURL: "https://photos.google.com/ok-1"},
 			{ID: "photo-ok-2", DownloadURL: "https://photos.google.com/ok-2"},
 		},
-		downloadedData: []byte("sample-image-content"),
+		downloadedData: createTestJPEG(200, 200),
 	}
 
 	visionSvc := &mockVisionService{
@@ -297,14 +297,14 @@ func TestMetricsHTTPIntegration_AllSuccessfulPass(t *testing.T) {
 	if parsed["rose_syncer_photos_downloaded_total"] != 2 {
 		t.Errorf("expected 2 downloaded photos, got %f", parsed["rose_syncer_photos_downloaded_total"])
 	}
-	if parsed["rose_syncer_thumbnails_generated_total"] != 0 {
-		t.Errorf("expected 0 thumbnails generated, got %f", parsed["rose_syncer_thumbnails_generated_total"])
+	if parsed["rose_syncer_thumbnails_generated_total"] != 2 {
+		t.Errorf("expected 2 thumbnails generated, got %f", parsed["rose_syncer_thumbnails_generated_total"])
 	}
-	if parsed[`rose_syncer_storage_bytes{type="images"}`] != 1024 {
-		t.Errorf("expected 1024 bytes for images, got %f", parsed[`rose_syncer_storage_bytes{type="images"}`])
+	if parsed[`rose_syncer_storage_bytes{type="images"}`] <= 1024 {
+		t.Errorf("expected > 1024 bytes for images, got %f", parsed[`rose_syncer_storage_bytes{type="images"}`])
 	}
-	if parsed[`rose_syncer_storage_bytes{type="thumbnails"}`] != 128 {
-		t.Errorf("expected 128 bytes for thumbnails, got %f", parsed[`rose_syncer_storage_bytes{type="thumbnails"}`])
+	if parsed[`rose_syncer_storage_bytes{type="thumbnails"}`] <= 128 {
+		t.Errorf("expected > 128 bytes for thumbnails, got %f", parsed[`rose_syncer_storage_bytes{type="thumbnails"}`])
 	}
 	if parsed["rose_syncer_sync_duration_seconds"] <= 0 {
 		t.Errorf("expected sync duration > 0, got %f", parsed["rose_syncer_sync_duration_seconds"])

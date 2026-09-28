@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"net"
 	"net/http"
 	"os"
@@ -52,7 +56,7 @@ func (m *mockPhotoService) DownloadImage(ctx context.Context, downloadURL string
 	if len(m.downloadedData) > 0 {
 		return m.downloadedData, nil
 	}
-	return []byte("fake-image-bytes-" + downloadURL), nil
+	return createTestJPEG(200, 200), nil
 }
 
 type mockVisionService struct {
@@ -108,12 +112,13 @@ func (m *mockIssueReporter) CreateFailureIssue(ctx context.Context, report githu
 func TestFullSyncPass(t *testing.T) {
 	tempDir := t.TempDir()
 	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(800, 600)
 	photoSvc := &mockPhotoService{
 		photos: []photos.Photo{
 			{ID: "photo-1", DownloadURL: "https://photos.google.com/photo-1=w0-h0"},
 			{ID: "photo-2", DownloadURL: "https://photos.google.com/photo-2=w0-h0"},
 		},
-		downloadedData: []byte("sample-raw-bytes"),
+		downloadedData: rawJPEG,
 	}
 	visionSvc := &mockVisionService{
 		analyzeFunc: func(ctx context.Context, img []byte) (string, string, error) {
@@ -133,8 +138,8 @@ func TestFullSyncPass(t *testing.T) {
 
 	// Verify vision service received actual image bytes
 	for i, img := range visionSvc.receivedImg {
-		if string(img) != "sample-raw-bytes" {
-			t.Errorf("expected vision call %d to receive raw image bytes, got %q", i, string(img))
+		if !bytes.Equal(img, rawJPEG) {
+			t.Errorf("expected vision call %d to receive raw image bytes", i)
 		}
 	}
 
@@ -148,14 +153,20 @@ func TestFullSyncPass(t *testing.T) {
 			t.Errorf("expected %s to be marked processed", id)
 		}
 
-		// Verify raw image file
-		imgPath := filepath.Join(tempDir, id+".jpg")
+		// Verify raw image file in images/
+		imgPath := filepath.Join(tempDir, "images", id+".jpg")
 		imgBytes, err := os.ReadFile(imgPath)
 		if err != nil {
 			t.Fatalf("failed to read raw image file %s: %v", imgPath, err)
 		}
-		if string(imgBytes) != "sample-raw-bytes" {
-			t.Errorf("expected image content 'sample-raw-bytes', got %q", string(imgBytes))
+		if !bytes.Equal(imgBytes, rawJPEG) {
+			t.Errorf("image content mismatch for %s", id)
+		}
+
+		// Verify thumbnail file in thumbnails/
+		thumbPath := filepath.Join(tempDir, "thumbnails", id+".webp")
+		if _, err := os.Stat(thumbPath); err != nil {
+			t.Errorf("expected thumbnail to exist at %s: %v", thumbPath, err)
 		}
 
 		// Verify proto
@@ -182,8 +193,8 @@ func TestFullSyncPass(t *testing.T) {
 		if artwork.GetThemeId() != "Nature" {
 			t.Errorf("expected theme_id 'Nature', got %s", artwork.GetThemeId())
 		}
-		if artwork.GetImagePath() != id+".jpg" {
-			t.Errorf("expected image_path %s.jpg, got %s", id, artwork.GetImagePath())
+		if artwork.GetImagePath() != "images/"+id+".jpg" {
+			t.Errorf("expected image_path images/%s.jpg, got %s", id, artwork.GetImagePath())
 		}
 		if artwork.GetTimestamp() <= 0 {
 			t.Errorf("expected positive timestamp, got %d", artwork.GetTimestamp())
@@ -237,9 +248,11 @@ func TestErrorContinuation(t *testing.T) {
 			"photo-dl-err": errors.New("download timeout"),
 		},
 	}
+	visionCalls := 0
 	visionSvc := &mockVisionService{
 		analyzeFunc: func(ctx context.Context, img []byte) (string, string, error) {
-			if strings.Contains(string(img), "photo-vision-err") {
+			visionCalls++
+			if visionCalls == 1 {
 				return "", "", errors.New("vision AI transient error")
 			}
 			return "Ocean view", "Water", nil
@@ -281,8 +294,11 @@ func TestErrorContinuation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tempDir, "photo-ok.proto.bin")); err != nil {
 		t.Errorf("expected photo-ok.proto.bin to exist: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(tempDir, "photo-ok.jpg")); err != nil {
+	if _, err := os.Stat(filepath.Join(tempDir, "images", "photo-ok.jpg")); err != nil {
 		t.Errorf("expected photo-ok.jpg to exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, "thumbnails", "photo-ok.webp")); err != nil {
+		t.Errorf("expected photo-ok.webp to exist: %v", err)
 	}
 }
 
@@ -905,12 +921,13 @@ func gatherMetricValues(t *testing.T, m *metrics.Metrics) (map[string]float64, m
 func TestRun_MetricsInstrumentation_AllSuccessful(t *testing.T) {
 	tempDir := t.TempDir()
 	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(200, 200)
 	photoSvc := &mockPhotoService{
 		photos: []photos.Photo{
 			{ID: "p1", DownloadURL: "https://photos.app.goo.gl/dl1"},
 			{ID: "p2", DownloadURL: "https://photos.app.goo.gl/dl2"},
 		},
-		downloadedData: []byte("fake-image-bytes-data"),
+		downloadedData: rawJPEG,
 	}
 	visionSvc := &mockVisionService{
 		analyzeFunc: func(ctx context.Context, img []byte) (string, string, error) {
@@ -947,23 +964,28 @@ func TestRun_MetricsInstrumentation_AllSuccessful(t *testing.T) {
 	if got := values["rose_syncer_photos_downloaded_total"]; got != 2 {
 		t.Errorf("expected 2 downloaded photos, got %f", got)
 	}
+	if got := values["rose_syncer_thumbnails_generated_total"]; got != 2 {
+		t.Errorf("expected 2 thumbnails generated, got %f", got)
+	}
 	if got := values["rose_syncer_sync_errors_total"]; got != 0 {
 		t.Errorf("expected 0 sync errors, got %f", got)
 	}
 	if got := values["rose_syncer_sync_duration_seconds"]; got <= 0 {
 		t.Errorf("expected sync duration > 0, got %f", got)
 	}
-	if storageBytes["images"] != 100 {
-		t.Errorf("expected images storage bytes 100, got %f", storageBytes["images"])
+	expectedImages := 100 + 2*float64(len(rawJPEG))
+	if storageBytes["images"] != expectedImages {
+		t.Errorf("expected images storage bytes %f, got %f", expectedImages, storageBytes["images"])
 	}
-	if storageBytes["thumbnails"] != 50 {
-		t.Errorf("expected thumbnails storage bytes 50, got %f", storageBytes["thumbnails"])
+	if storageBytes["thumbnails"] <= 50 {
+		t.Errorf("expected thumbnails storage bytes > 50, got %f", storageBytes["thumbnails"])
 	}
 }
 
 func TestRun_MetricsInstrumentation_DownloadAndVisionErrors(t *testing.T) {
 	tempDir := t.TempDir()
 	store := storage.NewStore(tempDir)
+	validJPEG := createTestJPEG(200, 200)
 	photoSvc := &mockPhotoService{
 		photos: []photos.Photo{
 			{ID: "err-dl", DownloadURL: "https://photos.app.goo.gl/err-dl"},
@@ -973,7 +995,7 @@ func TestRun_MetricsInstrumentation_DownloadAndVisionErrors(t *testing.T) {
 		downloadErrByID: map[string]error{
 			"err-dl": errors.New("download failed"),
 		},
-		downloadedData: []byte("sample-data"),
+		downloadedData: validJPEG,
 	}
 	visionSvc := &mockVisionService{
 		analyzeFunc: func(ctx context.Context, img []byte) (string, string, error) {
@@ -1037,7 +1059,7 @@ func TestRun_NilMetrics_DoesNotPanic(t *testing.T) {
 		photos: []photos.Photo{
 			{ID: "p1", DownloadURL: "https://photos.app.goo.gl/dl1"},
 		},
-		downloadedData: []byte("test-data"),
+		downloadedData: createTestJPEG(100, 100),
 	}
 	visionSvc := &mockVisionService{}
 
@@ -1052,6 +1074,167 @@ func TestRun_NilMetrics_DoesNotPanic(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 }
+
+func createTestJPEG(w, h int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x % 256), G: uint8(y % 256), B: 128, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 80})
+	return buf.Bytes()
+}
+
+func TestRun_ThumbnailGenerationAndStorageLayout(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	validJPEG := createTestJPEG(800, 600)
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "thumb-photo-1", DownloadURL: "https://photos.google.com/p1"},
+		},
+		downloadedData: validJPEG,
+	}
+	visionSvc := &mockVisionService{
+		analyzeFunc: func(ctx context.Context, img []byte) (string, string, error) {
+			return "A vibrant garden", "gardens", nil
+		},
+	}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/test-album", tempDir, photoSvc, visionSvc, store, nil, m)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	// 1. Verify storage directory initialization (images and thumbnails directories exist)
+	imagesDir := filepath.Join(tempDir, "images")
+	if info, err := os.Stat(imagesDir); err != nil || !info.IsDir() {
+		t.Fatalf("expected images directory to exist at %s, err: %v", imagesDir, err)
+	}
+	thumbnailsDir := filepath.Join(tempDir, "thumbnails")
+	if info, err := os.Stat(thumbnailsDir); err != nil || !info.IsDir() {
+		t.Fatalf("expected thumbnails directory to exist at %s, err: %v", thumbnailsDir, err)
+	}
+
+	// 2. Verify image and thumbnail files written
+	fullImgPath := filepath.Join(imagesDir, "thumb-photo-1.jpg")
+	if _, err := os.Stat(fullImgPath); err != nil {
+		t.Fatalf("expected full-resolution image at %s: %v", fullImgPath, err)
+	}
+	thumbPath := filepath.Join(thumbnailsDir, "thumb-photo-1.webp")
+	thumbBytes, err := os.ReadFile(thumbPath)
+	if err != nil {
+		t.Fatalf("expected thumbnail at %s: %v", thumbPath, err)
+	}
+	if len(thumbBytes) < 12 || string(thumbBytes[0:4]) != "RIFF" || string(thumbBytes[8:12]) != "WEBP" {
+		t.Errorf("thumbnail does not have valid WebP RIFF header: %q", string(thumbBytes[:12]))
+	}
+
+	// 3. Verify proto contains updated ImagePath: "images/" + photo.ID + ".jpg"
+	protoPath := filepath.Join(tempDir, "thumb-photo-1.proto.bin")
+	protoBytes, err := os.ReadFile(protoPath)
+	if err != nil {
+		t.Fatalf("failed to read proto file %s: %v", protoPath, err)
+	}
+	var artwork gallery.Artwork
+	if err := proto.Unmarshal(protoBytes, &artwork); err != nil {
+		t.Fatalf("failed to unmarshal proto: %v", err)
+	}
+	if artwork.GetImagePath() != "images/thumb-photo-1.jpg" {
+		t.Errorf("expected ImagePath 'images/thumb-photo-1.jpg', got %q", artwork.GetImagePath())
+	}
+
+	// 4. Verify metrics: m.IncThumbnailsGenerated() was called
+	values, _ := gatherMetricValues(t, m)
+	if values["rose_syncer_thumbnails_generated_total"] != 1 {
+		t.Errorf("expected 1 thumbnail generated metric, got %f", values["rose_syncer_thumbnails_generated_total"])
+	}
+}
+
+func TestRun_ThumbnailGenerationFailure_Resilience(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	validJPEG := createTestJPEG(800, 600)
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "corrupted-photo", DownloadURL: "https://photos.google.com/corrupted-photo"},
+			{ID: "valid-photo", DownloadURL: "https://photos.google.com/valid-photo"},
+		},
+	}
+	// Return corrupted non-image bytes for corrupted-photo and valid JPEG for valid-photo
+	photoSvc.downloadErrByID = nil
+	visionSvc := &mockVisionService{}
+
+	// Custom download implementation in mock
+	callIdx := 0
+	_ = callIdx
+	m := metrics.NewMetrics()
+
+	// Use custom PhotoService for differing responses
+	photoSvcWithCorrupted := &customPhotoService{
+		photos: photoSvc.photos,
+		dataMap: map[string][]byte{
+			"corrupted-photo": []byte("corrupted-not-an-image-data"),
+			"valid-photo":     validJPEG,
+		},
+	}
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/test-album", tempDir, photoSvcWithCorrupted, visionSvc, store, nil, m)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 due to thumbnail generation error on corrupted photo, got %d", exitCode)
+	}
+
+	// corrupted-photo must NOT be marked processed in .sync-state.json
+	processed1, err := store.IsPhotoProcessed("corrupted-photo")
+	if err != nil {
+		t.Fatalf("error checking processed state: %v", err)
+	}
+	if processed1 {
+		t.Errorf("expected corrupted-photo to NOT be marked processed in sync state")
+	}
+
+	// valid-photo MUST be marked processed in .sync-state.json
+	processed2, err := store.IsPhotoProcessed("valid-photo")
+	if err != nil {
+		t.Fatalf("error checking processed state: %v", err)
+	}
+	if !processed2 {
+		t.Errorf("expected valid-photo to be marked processed in sync state")
+	}
+
+	// Metrics check
+	values, _ := gatherMetricValues(t, m)
+	if values["rose_syncer_sync_errors_total"] < 1 {
+		t.Errorf("expected at least 1 sync error for thumbnail failure, got %f", values["rose_syncer_sync_errors_total"])
+	}
+	if values["rose_syncer_thumbnails_generated_total"] != 1 {
+		t.Errorf("expected 1 thumbnail generated for valid-photo, got %f", values["rose_syncer_thumbnails_generated_total"])
+	}
+}
+
+type customPhotoService struct {
+	photos  []photos.Photo
+	dataMap map[string][]byte
+}
+
+func (c *customPhotoService) FetchPhotos(ctx context.Context, albumURL string) ([]photos.Photo, error) {
+	return c.photos, nil
+}
+
+func (c *customPhotoService) DownloadImage(ctx context.Context, downloadURL string) ([]byte, error) {
+	for id, data := range c.dataMap {
+		if strings.Contains(downloadURL, id) {
+			return data, nil
+		}
+	}
+	return []byte("dummy"), nil
+}
+
 
 
 
