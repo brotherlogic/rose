@@ -91,7 +91,7 @@ func TestStorageRobustness_NonExistentDirectory(t *testing.T) {
 	}
 }
 
-func TestWriteImage_Success(t *testing.T) {
+func TestWriteImage_DirectoryStructure(t *testing.T) {
 	tempDir := t.TempDir()
 	store := NewStore(tempDir)
 
@@ -101,7 +101,7 @@ func TestWriteImage_Success(t *testing.T) {
 		t.Fatalf("expected WriteImage to succeed, got error: %v", err)
 	}
 
-	expectedPath := filepath.Join(tempDir, "photo123.jpg")
+	expectedPath := filepath.Join(tempDir, "images", "photo123.jpg")
 	readData, err := os.ReadFile(expectedPath)
 	if err != nil {
 		t.Fatalf("expected image file to exist at %s: %v", expectedPath, err)
@@ -155,24 +155,104 @@ func TestWriteImage_DirectoryTraversal(t *testing.T) {
 	}
 }
 
-func TestWriteImage_AutoCreateDirectory(t *testing.T) {
+func TestWriteThumbnail_DirectoryStructure(t *testing.T) {
 	tempDir := t.TempDir()
-	nestedDir := filepath.Join(tempDir, "nested", "storage", "images")
-	store := NewStore(nestedDir)
+	store := NewStore(tempDir)
 
-	data := []byte("auto-create-image-data")
-	err := store.WriteImage("photo_new", data)
+	data := []byte("fake webp thumbnail data")
+	err := store.WriteThumbnail("photo123", data)
 	if err != nil {
-		t.Fatalf("expected WriteImage to auto-create directory and succeed, got error: %v", err)
+		t.Fatalf("expected WriteThumbnail to succeed, got error: %v", err)
 	}
 
-	expectedPath := filepath.Join(nestedDir, "photo_new.jpg")
+	expectedPath := filepath.Join(tempDir, "thumbnails", "photo123.webp")
 	readData, err := os.ReadFile(expectedPath)
 	if err != nil {
-		t.Fatalf("expected file to exist at %s: %v", expectedPath, err)
+		t.Fatalf("expected thumbnail file to exist at %s: %v", expectedPath, err)
 	}
+
 	if string(readData) != string(data) {
-		t.Errorf("expected file content %s, got %s", string(data), string(readData))
+		t.Errorf("thumbnail content mismatch: got %v, want %v", readData, data)
+	}
+
+	info, err := os.Stat(expectedPath)
+	if err != nil {
+		t.Fatalf("failed to stat written file: %v", err)
+	}
+	if info.Mode().Perm() != 0644 {
+		t.Errorf("expected file mode 0644, got %v", info.Mode().Perm())
+	}
+}
+
+func TestWriteThumbnail_PathTraversal(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	data := []byte("thumbnail payload")
+	maliciousIDs := []string{
+		"../id",
+		"..",
+		"/etc/passwd",
+		"foo/bar",
+		"\\test",
+		"",
+		".",
+		"nested\\file",
+		"foo/../bar",
+	}
+
+	for _, malID := range maliciousIDs {
+		t.Run(malID, func(t *testing.T) {
+			err := store.WriteThumbnail(malID, data)
+			if err == nil {
+				t.Fatalf("expected error for malicious ID %q, but got nil", malID)
+			}
+		})
+	}
+
+	thumbnailsDir := filepath.Join(tempDir, "thumbnails")
+	if entries, err := os.ReadDir(thumbnailsDir); err == nil && len(entries) != 0 {
+		t.Errorf("expected no files written for malicious IDs, found %d entries", len(entries))
+	}
+}
+
+func TestWrite_AutoCreateDirectories(t *testing.T) {
+	tempDir := t.TempDir()
+	nestedDir := filepath.Join(tempDir, "nested", "deeply", "storage")
+	store := NewStore(nestedDir)
+
+	err := store.WriteImage("img1", []byte("img-bytes"))
+	if err != nil {
+		t.Fatalf("WriteImage failed: %v", err)
+	}
+
+	err = store.WriteThumbnail("thumb1", []byte("thumb-bytes"))
+	if err != nil {
+		t.Fatalf("WriteThumbnail failed: %v", err)
+	}
+
+	imagesDir := filepath.Join(nestedDir, "images")
+	imgInfo, err := os.Stat(imagesDir)
+	if err != nil {
+		t.Fatalf("expected images directory to exist at %s: %v", imagesDir, err)
+	}
+	if !imgInfo.IsDir() {
+		t.Fatalf("expected %s to be a directory", imagesDir)
+	}
+	if imgInfo.Mode().Perm() != 0755 {
+		t.Errorf("expected images directory mode 0755, got %v", imgInfo.Mode().Perm())
+	}
+
+	thumbnailsDir := filepath.Join(nestedDir, "thumbnails")
+	thumbInfo, err := os.Stat(thumbnailsDir)
+	if err != nil {
+		t.Fatalf("expected thumbnails directory to exist at %s: %v", thumbnailsDir, err)
+	}
+	if !thumbInfo.IsDir() {
+		t.Fatalf("expected %s to be a directory", thumbnailsDir)
+	}
+	if thumbInfo.Mode().Perm() != 0755 {
+		t.Errorf("expected thumbnails directory mode 0755, got %v", thumbInfo.Mode().Perm())
 	}
 }
 
