@@ -575,3 +575,450 @@ func TestFetchContinuationBatch_EmptyBatch(t *testing.T) {
 	}
 }
 
+func makeTestAlbumHTML(photos []Photo, initialToken string) string {
+	var items [][]any
+	for _, p := range photos {
+		items = append(items, []any{p.ID, []any{p.DownloadURL, 1920, 1080}})
+	}
+	var data []any
+	if initialToken != "" {
+		data = []any{nil, items, initialToken}
+	} else {
+		data = []any{nil, items}
+	}
+	dataJSON, _ := json.Marshal(data)
+	return fmt.Sprintf(`<!DOCTYPE html><html><body><script>AF_initDataCallback({key:'ds:1',data:%s});</script></body></html>`, string(dataJSON))
+}
+
+func makeTestBatchResponse(photos []Photo, nextToken string) string {
+	var items [][]any
+	for _, p := range photos {
+		items = append(items, []any{p.ID, []any{p.DownloadURL, 1920, 1080}})
+	}
+	var batchData []any
+	if nextToken != "" {
+		batchData = []any{nil, items, nextToken}
+	} else {
+		batchData = []any{nil, items}
+	}
+	batchJSON, _ := json.Marshal(batchData)
+	envelope, _ := json.Marshal([][]any{
+		{"wrb.fr", albumContinuationRPCID, string(batchJSON), nil, nil, nil, "generic"},
+	})
+	return ")]}'\n\n" + string(envelope)
+}
+
+func makeTestBatchResponseWithVideos(photos []Photo, videoIDs []string, nextToken string) string {
+	var items [][]any
+	for _, p := range photos {
+		items = append(items, []any{p.ID, []any{p.DownloadURL, 1920, 1080}})
+	}
+	for _, vid := range videoIDs {
+		items = append(items, []any{vid, []any{"https://lh3.googleusercontent.com/pw/video", 1920, 1080}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, []any{"video/mp4"}})
+	}
+	var batchData []any
+	if nextToken != "" {
+		batchData = []any{nil, items, nextToken}
+	} else {
+		batchData = []any{nil, items}
+	}
+	batchJSON, _ := json.Marshal(batchData)
+	envelope, _ := json.Marshal([][]any{
+		{"wrb.fr", albumContinuationRPCID, string(batchJSON), nil, nil, nil, "generic"},
+	})
+	return ")]}'\n\n" + string(envelope)
+}
+
+func TestFetchPhotos_Pagination_Success(t *testing.T) {
+	initialPhotos := make([]Photo, 200)
+	for i := 0; i < 200; i++ {
+		initialPhotos[i] = Photo{
+			ID:          fmt.Sprintf("photo-init-%03d", i),
+			DownloadURL: fmt.Sprintf("https://lh3.googleusercontent.com/pw/init_%03d=w0-h0", i),
+		}
+	}
+	mockHTML := makeTestAlbumHTML(initialPhotos, "token-batch-1")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(mockHTML))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == batchExecutePath {
+			_ = r.ParseForm()
+			reqVal := r.PostForm.Get("f.req")
+			var batchNum int
+			if strings.Contains(reqVal, "token-batch-1") {
+				batchNum = 1
+			} else if strings.Contains(reqVal, "token-batch-2") {
+				batchNum = 2
+			} else if strings.Contains(reqVal, "token-batch-3") {
+				batchNum = 3
+			} else if strings.Contains(reqVal, "token-batch-4") {
+				batchNum = 4
+			} else if strings.Contains(reqVal, "token-batch-5") {
+				batchNum = 5
+			}
+
+			if batchNum > 0 {
+				batchPhotos := make([]Photo, 200)
+				for i := 0; i < 200; i++ {
+					idx := (batchNum * 200) + i
+					batchPhotos[i] = Photo{
+						ID:          fmt.Sprintf("photo-batch-%04d", idx),
+						DownloadURL: fmt.Sprintf("https://lh3.googleusercontent.com/pw/batch_%04d=w0-h0", idx),
+					}
+				}
+				var nextTok string
+				if batchNum < 5 {
+					nextTok = fmt.Sprintf("token-batch-%d", batchNum+1)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(makeTestBatchResponse(batchPhotos, nextTok)))
+				return
+			}
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	photos, err := svc.FetchPhotos(context.Background(), "https://photos.google.com/share/large-album")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(photos) < 1000 {
+		t.Fatalf("expected >= 1000 photos, got %d", len(photos))
+	}
+	if len(photos) != 1200 {
+		t.Fatalf("expected 1200 photos, got %d", len(photos))
+	}
+
+	seen := make(map[string]bool)
+	for _, p := range photos {
+		if seen[p.ID] {
+			t.Fatalf("duplicate photo ID found: %s", p.ID)
+		}
+		seen[p.ID] = true
+	}
+}
+
+func TestFetchPhotos_SinglePage_NoToken(t *testing.T) {
+	photos := []Photo{
+		{ID: "p1", DownloadURL: "https://lh3.googleusercontent.com/pw/p1=w0-h0"},
+		{ID: "p2", DownloadURL: "https://lh3.googleusercontent.com/pw/p2=w0-h0"},
+	}
+	mockHTML := makeTestAlbumHTML(photos, "")
+
+	batchCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(mockHTML))
+			return
+		}
+		if r.URL.Path == batchExecutePath {
+			batchCount++
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	result, err := svc.FetchPhotos(context.Background(), "https://photos.google.com/share/single-page")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 photos, got %d", len(result))
+	}
+	if batchCount != 0 {
+		t.Fatalf("expected 0 batchexecute requests, got %d", batchCount)
+	}
+}
+
+func TestFetchPhotos_CrossPageDeduplication(t *testing.T) {
+	page1 := []Photo{
+		{ID: "photo-1", DownloadURL: "https://lh3.googleusercontent.com/pw/p1=w0-h0"},
+		{ID: "photo-2", DownloadURL: "https://lh3.googleusercontent.com/pw/p2=w0-h0"},
+	}
+	mockHTML := makeTestAlbumHTML(page1, "token-dedup")
+
+	page2 := []Photo{
+		{ID: "photo-2", DownloadURL: "https://lh3.googleusercontent.com/pw/p2=w0-h0"},
+		{ID: "photo-3", DownloadURL: "https://lh3.googleusercontent.com/pw/p3=w0-h0"},
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(mockHTML))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == batchExecutePath {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(makeTestBatchResponse(page2, "")))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	result, err := svc.FetchPhotos(context.Background(), "https://photos.google.com/share/dedup")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 unique photos, got %d: %+v", len(result), result)
+	}
+	expectedIDs := []string{"photo-1", "photo-2", "photo-3"}
+	for i, id := range expectedIDs {
+		if result[i].ID != id {
+			t.Errorf("expected photo[%d].ID=%q, got %q", i, id, result[i].ID)
+		}
+	}
+}
+
+func TestFetchPhotos_VideoFilteringAcrossPages(t *testing.T) {
+	page1 := []Photo{
+		{ID: "photo-1", DownloadURL: "https://lh3.googleusercontent.com/pw/p1=w0-h0"},
+	}
+	mockHTML := makeTestAlbumHTML(page1, "token-video")
+
+	page2 := []Photo{
+		{ID: "photo-2", DownloadURL: "https://lh3.googleusercontent.com/pw/p2=w0-h0"},
+	}
+	videoIDs := []string{"video-batch-1"}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(mockHTML))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == batchExecutePath {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(makeTestBatchResponseWithVideos(page2, videoIDs, "")))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	result, err := svc.FetchPhotos(context.Background(), "https://photos.google.com/share/video-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 photos, got %d: %+v", len(result), result)
+	}
+	for _, p := range result {
+		if strings.Contains(p.ID, "video") {
+			t.Errorf("found video in photos result: %s", p.ID)
+		}
+	}
+}
+
+func TestFetchPhotos_CyclicTokenDetection(t *testing.T) {
+	page1 := []Photo{
+		{ID: "photo-1", DownloadURL: "https://lh3.googleusercontent.com/pw/p1=w0-h0"},
+	}
+	mockHTML := makeTestAlbumHTML(page1, "token-cycle")
+
+	page2 := []Photo{
+		{ID: "photo-2", DownloadURL: "https://lh3.googleusercontent.com/pw/p2=w0-h0"},
+	}
+
+	callCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(mockHTML))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == batchExecutePath {
+			callCount++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			// Return identical token "token-cycle" causing potential loop
+			_, _ = w.Write([]byte(makeTestBatchResponse(page2, "token-cycle")))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	result, err := svc.FetchPhotos(context.Background(), "https://photos.google.com/share/cyclic")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 photos, got %d", len(result))
+	}
+	if callCount != 1 {
+		t.Fatalf("expected exactly 1 continuation call before cycle break, got %d", callCount)
+	}
+}
+
+func TestFetchPhotos_MaxPageSafetyLimit(t *testing.T) {
+	page1 := []Photo{
+		{ID: "photo-1", DownloadURL: "https://lh3.googleusercontent.com/pw/p1=w0-h0"},
+	}
+	mockHTML := makeTestAlbumHTML(page1, "tok-0")
+
+	callCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(mockHTML))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == batchExecutePath {
+			callCount++
+			nextTok := fmt.Sprintf("tok-%d", callCount)
+			batchPhotos := []Photo{
+				{ID: fmt.Sprintf("photo-inf-%d", callCount), DownloadURL: "https://lh3.googleusercontent.com/pw/inf=w0-h0"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(makeTestBatchResponse(batchPhotos, nextTok)))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	result, err := svc.FetchPhotos(context.Background(), "https://photos.google.com/share/infinite")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callCount != MaxPaginationPages {
+		t.Fatalf("expected exactly %d continuation calls (MaxPaginationPages), got %d", MaxPaginationPages, callCount)
+	}
+	if len(result) != 1+MaxPaginationPages {
+		t.Fatalf("expected %d photos, got %d", 1+MaxPaginationPages, len(result))
+	}
+}
+
+func TestFetchPhotos_RateLimitMidPagination(t *testing.T) {
+	page1 := []Photo{
+		{ID: "photo-1", DownloadURL: "https://lh3.googleusercontent.com/pw/p1=w0-h0"},
+	}
+	mockHTML := makeTestAlbumHTML(page1, "token-rl-mid")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(mockHTML))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == batchExecutePath {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	_, err := svc.FetchPhotos(context.Background(), "https://photos.google.com/share/ratelimit")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited, got: %v", err)
+	}
+}
+
+func TestFetchPhotos_ContextCancellationMidPagination(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	page1 := []Photo{
+		{ID: "photo-1", DownloadURL: "https://lh3.googleusercontent.com/pw/p1=w0-h0"},
+	}
+	mockHTML := makeTestAlbumHTML(page1, "token-cancel")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(mockHTML))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == batchExecutePath {
+			cancel() // cancel context as soon as batch execute is called
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(makeTestBatchResponse([]Photo{{ID: "photo-2", DownloadURL: "https://lh3.googleusercontent.com/pw/p2=w0-h0"}}, "next-token")))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	_, err := svc.FetchPhotos(ctx, "https://photos.google.com/share/cancel")
+	if err == nil {
+		t.Fatal("expected context error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled error, got: %v", err)
+	}
+}
+
+func TestFetchPhotos_EmptyContinuationBatch(t *testing.T) {
+	page1 := []Photo{
+		{ID: "photo-1", DownloadURL: "https://lh3.googleusercontent.com/pw/p1=w0-h0"},
+	}
+	mockHTML := makeTestAlbumHTML(page1, "token-empty-batch")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(mockHTML))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == batchExecutePath {
+			emptyBatchJSON := `[null, [], null]`
+			envelopeJSON, _ := json.Marshal([][]any{
+				{"wrb.fr", albumContinuationRPCID, emptyBatchJSON, nil, nil, nil, "generic"},
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(")]}'\n\n" + string(envelopeJSON)))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	svc := newTestService(ts.Listener.Addr().String())
+	result, err := svc.FetchPhotos(context.Background(), "https://photos.google.com/share/empty-batch")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 photo from page 1, got %d", len(result))
+	}
+	if result[0].ID != "photo-1" {
+		t.Fatalf("expected photo ID %q, got %q", "photo-1", result[0].ID)
+	}
+}
+
+
