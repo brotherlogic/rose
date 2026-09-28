@@ -349,7 +349,8 @@ func extractPhotosRegex(html string) []Photo {
 // FetchPhotos fetches a Google Photos shared album page, parses media metadata,
 // filters out video items, and returns high-resolution Photo records.
 func (s *Service) FetchPhotos(ctx context.Context, albumURL string) ([]Photo, error) {
-	if _, err := ValidateAlbumURL(albumURL); err != nil {
+	u, err := ValidateAlbumURL(albumURL)
+	if err != nil {
 		return nil, err
 	}
 
@@ -395,6 +396,7 @@ func (s *Service) FetchPhotos(ctx context.Context, albumURL string) ([]Photo, er
 
 	// 1. Try parsing AF_initDataCallback
 	var parsedPhotos []Photo
+	var initialToken string
 	idx := 0
 	for {
 		pos := strings.Index(html[idx:], "AF_initDataCallback")
@@ -414,6 +416,9 @@ func (s *Service) FetchPhotos(ctx context.Context, albumURL string) ([]Photo, er
 						if len(extracted) > 0 {
 							parsedPhotos = append(parsedPhotos, extracted...)
 						}
+						if initialToken == "" {
+							initialToken = extractContinuationToken(raw)
+						}
 					}
 				}
 			}
@@ -421,18 +426,70 @@ func (s *Service) FetchPhotos(ctx context.Context, albumURL string) ([]Photo, er
 		idx = start + len("AF_initDataCallback")
 	}
 
-	if len(parsedPhotos) > 0 {
-		return parsedPhotos, nil
+	seen := make(map[string]bool)
+	var allPhotos []Photo
+
+	for _, p := range parsedPhotos {
+		if !seen[p.ID] {
+			seen[p.ID] = true
+			allPhotos = append(allPhotos, p)
+		}
 	}
 
 	// 2. Fallback to regex extraction
-	regexPhotos := extractPhotosRegex(html)
-	if len(regexPhotos) > 0 {
-		return regexPhotos, nil
+	if len(allPhotos) == 0 {
+		regexPhotos := extractPhotosRegex(html)
+		for _, p := range regexPhotos {
+			if !seen[p.ID] {
+				seen[p.ID] = true
+				allPhotos = append(allPhotos, p)
+			}
+		}
 	}
 
-	// Return empty slice if no photos found in valid HTML
-	return []Photo{}, nil
+	albumHost := "photos.google.com"
+	if u != nil && u.Host != "" && u.Host != "photos.app.goo.gl" {
+		albumHost = u.Host
+	}
+	if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Host != "" && resp.Request.URL.Host != "photos.app.goo.gl" {
+		albumHost = resp.Request.URL.Host
+	}
+
+	seenTokens := make(map[string]bool)
+	token := initialToken
+	pageCount := 0
+	for token != "" && pageCount < MaxPaginationPages {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if seenTokens[token] {
+			break // Clean cycle termination
+		}
+		seenTokens[token] = true
+
+		batchPhotos, nextToken, err := s.fetchContinuationBatch(ctx, albumHost, token)
+		if err != nil {
+			return nil, err
+		}
+		if len(batchPhotos) == 0 {
+			break // Clean empty batch termination
+		}
+
+		for _, p := range batchPhotos {
+			if !seen[p.ID] {
+				seen[p.ID] = true
+				allPhotos = append(allPhotos, p)
+			}
+		}
+
+		token = nextToken
+		pageCount++
+	}
+
+	if allPhotos == nil {
+		allPhotos = []Photo{}
+	}
+	return allPhotos, nil
 }
 
 // DownloadImage streams image binary bytes from downloadURL with a 60-second context timeout.
