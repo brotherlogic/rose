@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HugoSmits86/nativewebp"
 	"github.com/brotherlogic/rose/internal/github"
 	"github.com/brotherlogic/rose/internal/metrics"
 	"github.com/brotherlogic/rose/internal/photos"
@@ -1133,6 +1134,16 @@ func TestRun_ThumbnailGenerationAndStorageLayout(t *testing.T) {
 	if len(thumbBytes) < 12 || string(thumbBytes[0:4]) != "RIFF" || string(thumbBytes[8:12]) != "WEBP" {
 		t.Errorf("thumbnail does not have valid WebP RIFF header: %q", string(thumbBytes[:12]))
 	}
+	thumbCfg, err := nativewebp.DecodeConfig(bytes.NewReader(thumbBytes))
+	if err != nil {
+		t.Fatalf("failed to decode WebP thumbnail config: %v", err)
+	}
+	if thumbCfg.Width > 600 || thumbCfg.Height > 600 {
+		t.Errorf("expected thumbnail to respect 600x600 bounding box, got %dx%d", thumbCfg.Width, thumbCfg.Height)
+	}
+	if thumbCfg.Width != 600 || thumbCfg.Height != 450 {
+		t.Errorf("expected 800x600 image to scale to 600x450, got %dx%d", thumbCfg.Width, thumbCfg.Height)
+	}
 
 	// 3. Verify proto contains updated ImagePath: "images/" + photo.ID + ".jpg"
 	protoPath := filepath.Join(tempDir, "thumb-photo-1.proto.bin")
@@ -1205,6 +1216,25 @@ func TestRun_ThumbnailGenerationFailure_Resilience(t *testing.T) {
 	}
 	if !processed2 {
 		t.Errorf("expected valid-photo to be marked processed in sync state")
+	}
+
+	// Verify valid-photo thumbnail was written and corrupted-photo thumbnail was NOT written
+	validThumbPath := filepath.Join(tempDir, "thumbnails", "valid-photo.webp")
+	validThumbBytes, err := os.ReadFile(validThumbPath)
+	if err != nil {
+		t.Fatalf("expected thumbnail to exist for valid-photo: %v", err)
+	}
+	validThumbCfg, err := nativewebp.DecodeConfig(bytes.NewReader(validThumbBytes))
+	if err != nil {
+		t.Fatalf("failed to decode valid-photo WebP thumbnail: %v", err)
+	}
+	if validThumbCfg.Width != 600 || validThumbCfg.Height != 450 {
+		t.Errorf("expected valid-photo thumbnail dimensions 600x450, got %dx%d", validThumbCfg.Width, validThumbCfg.Height)
+	}
+
+	corruptedThumbPath := filepath.Join(tempDir, "thumbnails", "corrupted-photo.webp")
+	if _, err := os.Stat(corruptedThumbPath); !os.IsNotExist(err) {
+		t.Errorf("expected no thumbnail for corrupted-photo, got err: %v", err)
 	}
 
 	// Metrics check

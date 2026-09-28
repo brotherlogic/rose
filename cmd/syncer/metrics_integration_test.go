@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HugoSmits86/nativewebp"
 	"github.com/brotherlogic/rose/internal/metrics"
 	"github.com/brotherlogic/rose/internal/photos"
 	"github.com/brotherlogic/rose/internal/storage"
@@ -213,6 +215,33 @@ func TestMetricsHTTPIntegration_EndToEnd(t *testing.T) {
 		t.Errorf("expected rose_syncer_sync_errors_total == 1, got %f", finalMetrics["rose_syncer_sync_errors_total"])
 	}
 
+	// Verify filesystem artifacts: images and thumbnails for successful items
+	for _, id := range []string{"p1", "p2"} {
+		imgPath := filepath.Join(tempDir, "images", id+".jpg")
+		if _, err := os.Stat(imgPath); err != nil {
+			t.Errorf("expected image file at %s: %v", imgPath, err)
+		}
+		thumbPath := filepath.Join(tempDir, "thumbnails", id+".webp")
+		thumbBytes, err := os.ReadFile(thumbPath)
+		if err != nil {
+			t.Fatalf("expected thumbnail file at %s: %v", thumbPath, err)
+		}
+		if len(thumbBytes) < 12 || string(thumbBytes[0:4]) != "RIFF" || string(thumbBytes[8:12]) != "WEBP" {
+			t.Errorf("thumbnail %s does not have valid WebP RIFF header", id)
+		}
+		thumbCfg, err := nativewebp.DecodeConfig(bytes.NewReader(thumbBytes))
+		if err != nil {
+			t.Fatalf("failed to decode WebP thumbnail config for %s: %v", id, err)
+		}
+		if thumbCfg.Width > 600 || thumbCfg.Height > 600 {
+			t.Errorf("thumbnail %s exceeds 600x600 bounding box: %dx%d", id, thumbCfg.Width, thumbCfg.Height)
+		}
+	}
+	// Verify failed item p3-fail has no image or thumbnail
+	if _, err := os.Stat(filepath.Join(tempDir, "thumbnails", "p3-fail.webp")); !os.IsNotExist(err) {
+		t.Errorf("expected no thumbnail for p3-fail, got err: %v", err)
+	}
+
 	// Terminate grace period
 	graceCancel()
 	<-graceDone
@@ -311,6 +340,31 @@ func TestMetricsHTTPIntegration_AllSuccessfulPass(t *testing.T) {
 	}
 	if parsed["rose_syncer_sync_errors_total"] != 0 {
 		t.Errorf("expected 0 sync errors, got %f", parsed["rose_syncer_sync_errors_total"])
+	}
+
+	for _, id := range []string{"photo-ok-1", "photo-ok-2"} {
+		imgPath := filepath.Join(imagesDir, id+".jpg")
+		if _, err := os.Stat(imgPath); err != nil {
+			t.Errorf("expected image file at %s: %v", imgPath, err)
+		}
+		thumbPath := filepath.Join(thumbnailsDir, id+".webp")
+		thumbBytes, err := os.ReadFile(thumbPath)
+		if err != nil {
+			t.Fatalf("expected thumbnail file at %s: %v", thumbPath, err)
+		}
+		if len(thumbBytes) < 12 || string(thumbBytes[0:4]) != "RIFF" || string(thumbBytes[8:12]) != "WEBP" {
+			t.Errorf("thumbnail %s does not have valid WebP RIFF header", id)
+		}
+		thumbCfg, err := nativewebp.DecodeConfig(bytes.NewReader(thumbBytes))
+		if err != nil {
+			t.Fatalf("failed to decode WebP thumbnail config for %s: %v", id, err)
+		}
+		if thumbCfg.Width > 600 || thumbCfg.Height > 600 {
+			t.Errorf("thumbnail %s exceeds 600x600 bounding box: %dx%d", id, thumbCfg.Width, thumbCfg.Height)
+		}
+		if thumbCfg.Width != 200 || thumbCfg.Height != 200 {
+			t.Errorf("expected sub-600px 200x200 dimensions retained, got %dx%d", thumbCfg.Width, thumbCfg.Height)
+		}
 	}
 }
 
