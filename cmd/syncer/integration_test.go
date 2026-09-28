@@ -115,7 +115,7 @@ AF_initDataCallback({
 	mockReporter := &mockIssueReporter{}
 
 	// 1. Initial Synchronization Pass
-	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, mockReporter)
+	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, mockReporter, nil)
 	if exitCode != 0 {
 		t.Fatalf("first Run pass failed with exit code %d", exitCode)
 	}
@@ -198,7 +198,7 @@ AF_initDataCallback({
 	}
 
 	// 4. Verify Idempotency (Second Pass)
-	pass2ExitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, mockReporter)
+	pass2ExitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, mockReporter, nil)
 	if pass2ExitCode != 0 {
 		t.Fatalf("second Run pass failed with exit code %d", pass2ExitCode)
 	}
@@ -341,7 +341,7 @@ AF_initDataCallback({
 	)
 
 	// --- Step 1: Catastrophic failure across all items triggers GitHub Issue POST ---
-	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, reporter)
+	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, reporter, nil)
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1 for catastrophic failure run, got %d", exitCode)
 	}
@@ -419,7 +419,7 @@ AF_initDataCallback({
 	getCallsBefore := ghState.getCalls
 	ghState.mu.Unlock()
 
-	exitCode2 := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, reporter)
+	exitCode2 := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, reporter, nil)
 	if exitCode2 != 1 {
 		t.Fatalf("expected exit code 1 for second failure run, got %d", exitCode2)
 	}
@@ -446,7 +446,7 @@ AF_initDataCallback({
 	postCallsBeforeSuccess := ghState.postCalls
 	ghState.mu.Unlock()
 
-	exitCodeSuccess := Run(context.Background(), albumURL, successTempDir, photoSvc, visionSvc, successStore, reporter)
+	exitCodeSuccess := Run(context.Background(), albumURL, successTempDir, photoSvc, visionSvc, successStore, reporter, nil)
 	if exitCodeSuccess != 0 {
 		t.Fatalf("expected exit code 0 for successful run, got %d", exitCodeSuccess)
 	}
