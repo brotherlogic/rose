@@ -107,4 +107,49 @@ func (s *Store) WriteThumbnail(id string, data []byte) error {
 	return os.WriteFile(filePath, data, 0644)
 }
 
+// ReadImage reads the raw image bytes for the given photo ID from the images directory.
+func (s *Store) ReadImage(id string) ([]byte, error) {
+	if err := validateID(id); err != nil {
+		return nil, err
+	}
+	filePath := filepath.Join(s.BasePath, "images", id+".jpg")
+	return os.ReadFile(filePath)
+}
+
+// HasThumbnail returns true if a non-directory thumbnail file exists for the given photo ID.
+func (s *Store) HasThumbnail(id string) bool {
+	if s == nil {
+		return false
+	}
+	if err := validateID(id); err != nil {
+		return false
+	}
+	filePath := filepath.Join(s.BasePath, "thumbnails", id+".webp")
+	fi, err := os.Stat(filePath)
+	return err == nil && !fi.IsDir()
+}
+
+// ReadArtworkProto reads the serialized protobuf bytes for the given photo ID.
+func (s *Store) ReadArtworkProto(id string) ([]byte, error) {
+	if err := validateID(id); err != nil {
+		return nil, err
+	}
+	filePath := filepath.Join(s.BasePath, id+".proto.bin")
+	return os.ReadFile(filePath)
+}
+
+// HasImage returns true if a non-directory raw image file exists for the given photo ID.
+func (s *Store) HasImage(id string) bool {
+	if s == nil {
+		return false
+	}
+	if err := validateID(id); err != nil {
+		return false
+	}
+	filePath := filepath.Join(s.BasePath, "images", id+".jpg")
+	fi, err := os.Stat(filePath)
+	return err == nil && !fi.IsDir()
+}
+
+
 

@@ -23,6 +23,7 @@ import (
 	"github.com/brotherlogic/rose/internal/metrics"
 	"github.com/brotherlogic/rose/internal/photos"
 	"github.com/brotherlogic/rose/internal/storage"
+	"github.com/brotherlogic/rose/internal/thumbnail"
 	gallery "github.com/brotherlogic/rose/proto"
 	dto "github.com/prometheus/client_model/go"
 	"google.golang.org/protobuf/proto"
@@ -1673,6 +1674,255 @@ func TestRun_DeferredReconciliationOnEarlyExitOrError(t *testing.T) {
 		}
 	})
 }
+
+func TestBackfillMissingThumbnails_ProcessedPhoto(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(800, 600)
+
+	photoID := "photo-legacy-1"
+
+	// 1. Mark as processed
+	if err := store.SaveProcessedPhoto(photoID); err != nil {
+		t.Fatalf("failed to mark processed: %v", err)
+	}
+
+	// 2. Write original image to images/photo-legacy-1.jpg
+	if err := store.WriteImage(photoID, rawJPEG); err != nil {
+		t.Fatalf("failed to write original image: %v", err)
+	}
+
+	// 3. Write legacy artwork proto with empty ThumbnailPath
+	legacyArtwork := &gallery.Artwork{
+		Id:            photoID,
+		Title:         "Legacy artwork",
+		Description:   "A beautiful vintage capture",
+		ThemeId:       "Vintage",
+		Timestamp:     time.Now().Unix(),
+		ImagePath:     "images/" + photoID + ".jpg",
+		ThumbnailPath: "",
+	}
+	protoBytes, err := proto.Marshal(legacyArtwork)
+	if err != nil {
+		t.Fatalf("failed to marshal proto: %v", err)
+	}
+	if err := store.WriteArtworkProto(photoID, protoBytes); err != nil {
+		t.Fatalf("failed to write artwork proto: %v", err)
+	}
+
+	// Ensure no thumbnail exists
+	thumbFile := filepath.Join(tempDir, "thumbnails", photoID+".webp")
+	if _, err := os.Stat(thumbFile); !os.IsNotExist(err) {
+		t.Fatalf("expected thumbnail to not exist initially")
+	}
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: photoID, DownloadURL: "https://photos.google.com/legacy=w0-h0"},
+		},
+	}
+	visionSvc := &mockVisionService{
+		analyzeFunc: func(ctx context.Context, img []byte) (string, string, error) {
+			t.Errorf("vision analysis should not be called for already processed photo")
+			return "", "", nil
+		},
+	}
+
+	m := metrics.NewMetrics()
+	albumURL := "https://photos.app.goo.gl/samplealbum"
+
+	exitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, nil, m)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	if len(photoSvc.downloadCalls) != 0 {
+		t.Errorf("expected photoSvc.DownloadImage not to be called, got %d calls", len(photoSvc.downloadCalls))
+	}
+	if visionSvc.callCount != 0 {
+		t.Errorf("expected visionSvc not to be called, got %d calls", visionSvc.callCount)
+	}
+
+	// Verify thumbnail was backfilled on disk
+	if fi, err := os.Stat(thumbFile); err != nil {
+		t.Errorf("expected thumbnail to be backfilled at %s: %v", thumbFile, err)
+	} else if fi.Size() == 0 {
+		t.Errorf("expected non-empty thumbnail file")
+	}
+
+	// Verify artwork proto was updated with ThumbnailPath
+	updatedProtoBytes, err := os.ReadFile(filepath.Join(tempDir, photoID+".proto.bin"))
+	if err != nil {
+		t.Fatalf("failed to read proto file: %v", err)
+	}
+	var updatedArtwork gallery.Artwork
+	if err := proto.Unmarshal(updatedProtoBytes, &updatedArtwork); err != nil {
+		t.Fatalf("failed to unmarshal updated artwork: %v", err)
+	}
+	expectedThumbPath := "thumbnails/" + photoID + ".webp"
+	if updatedArtwork.GetThumbnailPath() != expectedThumbPath {
+		t.Errorf("expected updated ThumbnailPath %q, got %q", expectedThumbPath, updatedArtwork.GetThumbnailPath())
+	}
+
+	// Verify metrics
+	values, _ := gatherMetricValues(t, m)
+	if got := values["rose_syncer_thumbnails_generated_total"]; got != 1 {
+		t.Errorf("expected thumbnails_generated_total=1, got %f", got)
+	}
+	if got := values["rose_syncer_thumbnails_stored"]; got != 1 {
+		t.Errorf("expected thumbnails_stored=1, got %f", got)
+	}
+}
+
+func TestBackfillMissingThumbnails_AlreadyHasThumbnail(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(400, 300)
+	photoID := "photo-with-thumb"
+
+	if err := store.SaveProcessedPhoto(photoID); err != nil {
+		t.Fatalf("failed to mark processed: %v", err)
+	}
+	if err := store.WriteImage(photoID, rawJPEG); err != nil {
+		t.Fatalf("failed to write original image: %v", err)
+	}
+	thumbBytes, err := thumbnail.GenerateThumbnail(rawJPEG)
+	if err != nil {
+		t.Fatalf("failed to generate thumbnail: %v", err)
+	}
+	if err := store.WriteThumbnail(photoID, thumbBytes); err != nil {
+		t.Fatalf("failed to write thumbnail: %v", err)
+	}
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: photoID, DownloadURL: "https://photos.google.com/thumb=w0-h0"},
+		},
+	}
+	visionSvc := &mockVisionService{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	if len(photoSvc.downloadCalls) != 0 {
+		t.Errorf("expected no download calls, got %d", len(photoSvc.downloadCalls))
+	}
+	if visionSvc.callCount != 0 {
+		t.Errorf("expected no vision calls, got %d", visionSvc.callCount)
+	}
+
+	values, _ := gatherMetricValues(t, m)
+	if got := values["rose_syncer_thumbnails_generated_total"]; got != 0 {
+		t.Errorf("expected 0 thumbnails generated when already exists, got %f", got)
+	}
+}
+
+func TestBackfillMissingThumbnails_OriginalImageMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoID := "photo-no-image"
+
+	if err := store.SaveProcessedPhoto(photoID); err != nil {
+		t.Fatalf("failed to mark processed: %v", err)
+	}
+	// Image file not written
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: photoID, DownloadURL: "https://photos.google.com/missing=w0-h0"},
+		},
+	}
+	visionSvc := &mockVisionService{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 when original image is missing, got %d", exitCode)
+	}
+
+	values, _ := gatherMetricValues(t, m)
+	if got := values["rose_syncer_sync_errors_total"]; got != 0 {
+		t.Errorf("expected 0 sync errors for missing image skip, got %f", got)
+	}
+	if got := values["rose_syncer_thumbnails_generated_total"]; got != 0 {
+		t.Errorf("expected 0 thumbnails generated, got %f", got)
+	}
+}
+
+func TestBackfillMissingThumbnails_CorruptedOriginalImage(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	photoID := "photo-corrupt"
+
+	if err := store.SaveProcessedPhoto(photoID); err != nil {
+		t.Fatalf("failed to mark processed: %v", err)
+	}
+	// Write corrupt image bytes
+	if err := store.WriteImage(photoID, []byte("not-a-valid-jpeg-image")); err != nil {
+		t.Fatalf("failed to write image: %v", err)
+	}
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: photoID, DownloadURL: "https://photos.google.com/corrupt=w0-h0"},
+		},
+	}
+	visionSvc := &mockVisionService{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 on corrupted image error, got %d", exitCode)
+	}
+
+	values, _ := gatherMetricValues(t, m)
+	if got := values["rose_syncer_sync_errors_total"]; got != 1 {
+		t.Errorf("expected 1 sync error for thumbnail generation failure, got %f", got)
+	}
+}
+
+func TestBackfillMissingThumbnails_WriteThumbnailFailureAborts(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(400, 300)
+	photoID := "photo-write-fail"
+
+	if err := store.SaveProcessedPhoto(photoID); err != nil {
+		t.Fatalf("failed to mark processed: %v", err)
+	}
+	if err := store.WriteImage(photoID, rawJPEG); err != nil {
+		t.Fatalf("failed to write image: %v", err)
+	}
+
+	// Make thumbnails/ a read-only directory so WriteThumbnail fails
+	thumbnailsDir := filepath.Join(tempDir, "thumbnails")
+	if err := os.MkdirAll(thumbnailsDir, 0555); err != nil {
+		t.Fatalf("failed to make thumbnails dir: %v", err)
+	}
+	defer os.Chmod(thumbnailsDir, 0755)
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: photoID, DownloadURL: "https://photos.google.com/writefail=w0-h0"},
+		},
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, m)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 on storage persistence abort, got %d", exitCode)
+	}
+	if reporter.createCalls.Load() != 1 {
+		t.Errorf("expected 1 failure report, got %d", reporter.createCalls.Load())
+	}
+}
+
+
 
 
 
