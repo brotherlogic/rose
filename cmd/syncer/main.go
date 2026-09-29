@@ -158,7 +158,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 
 	startTime := time.Now()
 	defer func() {
-		m.UpdateStorageBytes(storagePath)
+		m.ScanStorage(storagePath)
 		m.SetSyncDuration(time.Since(startTime))
 	}()
 
@@ -208,6 +208,8 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		})
 		return 1
 	}
+
+	m.ScanStorage(storagePath)
 
 	photosList, err := photoSvc.FetchPhotos(ctx, albumURL)
 	if err != nil {
@@ -311,6 +313,8 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			return 1
 		}
 		m.IncPhotosDownloaded()
+		m.IncStoredPhotos()
+		m.UpdateStorageBytes(storagePath)
 
 		thumbBytes, err := thumbnail.GenerateThumbnail(imgBytes)
 		if err != nil {
@@ -335,6 +339,8 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			return 1
 		}
 		m.IncThumbnailsGenerated()
+		m.IncStoredThumbnails()
+		m.UpdateStorageBytes(storagePath)
 
 		// Pass raw image bytes to vision service
 		desc, theme, err := visionSvc.AnalyzeImage(ctx, imgBytes)

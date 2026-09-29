@@ -35,9 +35,13 @@ type mockPhotoService struct {
 	downloadErrByID map[string]error
 	downloadedData  []byte
 	downloadCalls   []string
+	onFetchPhotos   func()
 }
 
 func (m *mockPhotoService) FetchPhotos(ctx context.Context, albumURL string) ([]photos.Photo, error) {
+	if m.onFetchPhotos != nil {
+		m.onFetchPhotos()
+	}
 	if m.fetchErr != nil {
 		return nil, m.fetchErr
 	}
@@ -1452,6 +1456,122 @@ func TestRun_ThumbnailPath_Fallback(t *testing.T) {
 		}
 	})
 }
+
+func TestRun_BaselineStorageMetricsInitialization(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+
+	imagesDir := filepath.Join(tempDir, "images")
+	thumbnailsDir := filepath.Join(tempDir, "thumbnails")
+	if err := os.MkdirAll(imagesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(thumbnailsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create pre-existing files on disk
+	if err := os.WriteFile(filepath.Join(imagesDir, "init1.jpg"), make([]byte, 100), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(imagesDir, "init2.jpg"), make([]byte, 200), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(thumbnailsDir, "init1.webp"), make([]byte, 50), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := metrics.NewMetrics()
+	var baselinePhotosStored, baselineThumbnailsStored float64
+	var baselineImagesBytes, baselineThumbnailsBytes float64
+	var hookCalled bool
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{},
+		onFetchPhotos: func() {
+			hookCalled = true
+			values, storageBytes := gatherMetricValues(t, m)
+			baselinePhotosStored = values["rose_syncer_photos_stored"]
+			baselineThumbnailsStored = values["rose_syncer_thumbnails_stored"]
+			baselineImagesBytes = storageBytes["images"]
+			baselineThumbnailsBytes = storageBytes["thumbnails"]
+		},
+	}
+	visionSvc := &mockVisionService{}
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/baseline", tempDir, photoSvc, visionSvc, store, nil, m)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	if !hookCalled {
+		t.Fatal("expected onFetchPhotos hook to be called during Run")
+	}
+
+	if baselinePhotosStored != 2 {
+		t.Errorf("expected baseline photos_stored=2 before FetchPhotos, got %f", baselinePhotosStored)
+	}
+	if baselineThumbnailsStored != 1 {
+		t.Errorf("expected baseline thumbnails_stored=1 before FetchPhotos, got %f", baselineThumbnailsStored)
+	}
+	if baselineImagesBytes != 300 {
+		t.Errorf("expected baseline storage_bytes[images]=300 before FetchPhotos, got %f", baselineImagesBytes)
+	}
+	if baselineThumbnailsBytes != 50 {
+		t.Errorf("expected baseline storage_bytes[thumbnails]=50 before FetchPhotos, got %f", baselineThumbnailsBytes)
+	}
+}
+
+func TestRun_IngestionLoopStoredMetricsAndReconciliation(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+
+	imagesDir := filepath.Join(tempDir, "images")
+	thumbnailsDir := filepath.Join(tempDir, "thumbnails")
+	if err := os.MkdirAll(imagesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(thumbnailsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1 pre-existing photo and thumbnail
+	if err := os.WriteFile(filepath.Join(imagesDir, "existing.jpg"), make([]byte, 100), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(thumbnailsDir, "existing.webp"), make([]byte, 50), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rawJPEG := createTestJPEG(200, 200)
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "new-photo-1", DownloadURL: "https://photos.app.goo.gl/new1"},
+		},
+		downloadedData: rawJPEG,
+	}
+	visionSvc := &mockVisionService{}
+
+	m := metrics.NewMetrics()
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/ingestion", tempDir, photoSvc, visionSvc, store, nil, m)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	values, storageBytes := gatherMetricValues(t, m)
+	if got := values["rose_syncer_photos_stored"]; got != 2 {
+		t.Errorf("expected photos_stored=2 after ingestion, got %f", got)
+	}
+	if got := values["rose_syncer_thumbnails_stored"]; got != 2 {
+		t.Errorf("expected thumbnails_stored=2 after ingestion, got %f", got)
+	}
+	if got := storageBytes["images"]; got != 100+float64(len(rawJPEG)) {
+		t.Errorf("expected storage_bytes[images]=%f, got %f", 100+float64(len(rawJPEG)), got)
+	}
+	if got := storageBytes["thumbnails"]; got <= 50 {
+		t.Errorf("expected storage_bytes[thumbnails] > 50, got %f", got)
+	}
+}
+
 
 
 
