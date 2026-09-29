@@ -146,6 +146,18 @@ func TestMetricsHTTPIntegration_EndToEnd(t *testing.T) {
 	if duringMetrics["rose_syncer_photos_discovered_total"] != 3 {
 		t.Errorf("expected 3 photos discovered during execution, got %f", duringMetrics["rose_syncer_photos_discovered_total"])
 	}
+	if duringMetrics["rose_syncer_photos_stored"] != 1 {
+		t.Errorf("expected 1 pre-existing stored photo during execution, got %f", duringMetrics["rose_syncer_photos_stored"])
+	}
+	if duringMetrics["rose_syncer_thumbnails_stored"] != 1 {
+		t.Errorf("expected 1 pre-existing stored thumbnail during execution, got %f", duringMetrics["rose_syncer_thumbnails_stored"])
+	}
+	if duringMetrics[`rose_syncer_storage_bytes{type="images"}`] != 512 {
+		t.Errorf("expected 512 bytes for images during execution, got %f", duringMetrics[`rose_syncer_storage_bytes{type="images"}`])
+	}
+	if duringMetrics[`rose_syncer_storage_bytes{type="thumbnails"}`] != 256 {
+		t.Errorf("expected 256 bytes for thumbnails during execution, got %f", duringMetrics[`rose_syncer_storage_bytes{type="thumbnails"}`])
+	}
 
 	// Unblock download
 	close(photoSvc.allowDownload)
@@ -195,6 +207,14 @@ func TestMetricsHTTPIntegration_EndToEnd(t *testing.T) {
 	// Verify rose_syncer_thumbnails_generated_total is initialized and exported (2)
 	if val, ok := finalMetrics["rose_syncer_thumbnails_generated_total"]; !ok || val != 2 {
 		t.Errorf("expected rose_syncer_thumbnails_generated_total == 2, got val=%f ok=%v", val, ok)
+	}
+
+	// Verify rose_syncer_photos_stored and rose_syncer_thumbnails_stored
+	if finalMetrics["rose_syncer_photos_stored"] != 3 {
+		t.Errorf("expected rose_syncer_photos_stored == 3, got %f", finalMetrics["rose_syncer_photos_stored"])
+	}
+	if finalMetrics["rose_syncer_thumbnails_stored"] != 3 {
+		t.Errorf("expected rose_syncer_thumbnails_stored == 3, got %f", finalMetrics["rose_syncer_thumbnails_stored"])
 	}
 
 	// Verify rose_syncer_storage_bytes{type="images"} and rose_syncer_storage_bytes{type="thumbnails"}
@@ -342,6 +362,13 @@ func TestMetricsHTTPIntegration_AllSuccessfulPass(t *testing.T) {
 		t.Errorf("expected 0 sync errors, got %f", parsed["rose_syncer_sync_errors_total"])
 	}
 
+	if parsed["rose_syncer_photos_stored"] != 3 {
+		t.Errorf("expected rose_syncer_photos_stored == 3, got %f", parsed["rose_syncer_photos_stored"])
+	}
+	if parsed["rose_syncer_thumbnails_stored"] != 3 {
+		t.Errorf("expected rose_syncer_thumbnails_stored == 3, got %f", parsed["rose_syncer_thumbnails_stored"])
+	}
+
 	for _, id := range []string{"photo-ok-1", "photo-ok-2"} {
 		imgPath := filepath.Join(imagesDir, id+".jpg")
 		if _, err := os.Stat(imgPath); err != nil {
@@ -367,4 +394,165 @@ func TestMetricsHTTPIntegration_AllSuccessfulPass(t *testing.T) {
 		}
 	}
 }
+
+type stepPhotoService struct {
+	photos        []photos.Photo
+	step1Done     chan struct{}
+	step2Allow    chan struct{}
+}
+
+func (s *stepPhotoService) FetchPhotos(ctx context.Context, albumURL string) ([]photos.Photo, error) {
+	return s.photos, nil
+}
+
+func (s *stepPhotoService) DownloadImage(ctx context.Context, downloadURL string) ([]byte, error) {
+	if strings.Contains(downloadURL, "dyn2") {
+		if s.step1Done != nil {
+			close(s.step1Done)
+		}
+		if s.step2Allow != nil {
+			select {
+			case <-s.step2Allow:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	return createTestJPEG(200, 200), nil
+}
+
+func TestMetricsHTTPIntegration_StartupBaselineAndDynamicUpdate(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	_ = store
+	imagesDir := filepath.Join(tempDir, "images")
+	thumbnailsDir := filepath.Join(tempDir, "thumbnails")
+	_ = os.MkdirAll(imagesDir, 0755)
+	_ = os.MkdirAll(thumbnailsDir, 0755)
+
+	_ = os.WriteFile(filepath.Join(imagesDir, "existing1.jpg"), make([]byte, 300), 0644)
+	_ = os.WriteFile(filepath.Join(imagesDir, "existing2.jpg"), make([]byte, 400), 0644)
+	_ = os.WriteFile(filepath.Join(thumbnailsDir, "existing1.webp"), make([]byte, 150), 0644)
+
+	m := metrics.NewMetrics()
+	m.ScanStorage(tempDir)
+	listener, server, err := startMetricsServer(0, m.Handler())
+	if err != nil {
+		t.Fatalf("failed to start metrics server: %v", err)
+	}
+	defer func() {
+		_ = shutdownServer(server, 2*time.Second)
+	}()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	metricsURL := fmt.Sprintf("http://localhost:%d/metrics", port)
+
+	// 1. Immediately query /metrics before Run processing commences
+	respStartup, err := http.Get(metricsURL)
+	if err != nil {
+		t.Fatalf("failed to scrape startup metrics: %v", err)
+	}
+	startupBody, _ := io.ReadAll(respStartup.Body)
+	_ = respStartup.Body.Close()
+	startupMetrics := parsePrometheusMetrics(string(startupBody))
+
+	if startupMetrics["rose_syncer_photos_stored"] != 2 {
+		t.Errorf("expected immediate startup photos_stored=2, got %f", startupMetrics["rose_syncer_photos_stored"])
+	}
+	if startupMetrics["rose_syncer_thumbnails_stored"] != 1 {
+		t.Errorf("expected immediate startup thumbnails_stored=1, got %f", startupMetrics["rose_syncer_thumbnails_stored"])
+	}
+	if startupMetrics[`rose_syncer_storage_bytes{type="images"}`] != 700 {
+		t.Errorf("expected immediate startup storage_bytes[images]=700, got %f", startupMetrics[`rose_syncer_storage_bytes{type="images"}`])
+	}
+	if startupMetrics[`rose_syncer_storage_bytes{type="thumbnails"}`] != 150 {
+		t.Errorf("expected immediate startup storage_bytes[thumbnails]=150, got %f", startupMetrics[`rose_syncer_storage_bytes{type="thumbnails"}`])
+	}
+
+	// 2. Synchronized step-by-step ingestion to assert dynamic /metrics reflection
+	step1Done := make(chan struct{})
+	step2Allow := make(chan struct{})
+	stepService := &stepPhotoService{
+		photos: []photos.Photo{
+			{ID: "dyn-p1", DownloadURL: "https://photos.google.com/dyn1"},
+			{ID: "dyn-p2", DownloadURL: "https://photos.google.com/dyn2"},
+		},
+		step1Done:  step1Done,
+		step2Allow: step2Allow,
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+
+	runDone := make(chan int, 1)
+	go func() {
+		code := Run(context.Background(), "https://photos.app.goo.gl/dyn-album", tempDir, stepService, visionSvc, store, reporter, m)
+		runDone <- code
+	}()
+
+	// Wait for dyn-p1 to finish and dyn-p2 to begin downloading
+	select {
+	case <-step1Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for dyn-p1 processing")
+	}
+
+	// Query /metrics dynamically while paused between p1 and p2
+	respDynamic, err := http.Get(metricsURL)
+	if err != nil {
+		t.Fatalf("failed to scrape dynamic metrics: %v", err)
+	}
+	dynamicBody, _ := io.ReadAll(respDynamic.Body)
+	_ = respDynamic.Body.Close()
+	dynamicMetrics := parsePrometheusMetrics(string(dynamicBody))
+
+	if dynamicMetrics["rose_syncer_photos_stored"] != 3 {
+		t.Errorf("expected dynamic photos_stored=3 after photo 1, got %f", dynamicMetrics["rose_syncer_photos_stored"])
+	}
+	if dynamicMetrics["rose_syncer_thumbnails_stored"] != 2 {
+		t.Errorf("expected dynamic thumbnails_stored=2 after photo 1, got %f", dynamicMetrics["rose_syncer_thumbnails_stored"])
+	}
+	if dynamicMetrics[`rose_syncer_storage_bytes{type="images"}`] <= 700 {
+		t.Errorf("expected dynamic storage_bytes[images] > 700, got %f", dynamicMetrics[`rose_syncer_storage_bytes{type="images"}`])
+	}
+	if dynamicMetrics[`rose_syncer_storage_bytes{type="thumbnails"}`] <= 150 {
+		t.Errorf("expected dynamic storage_bytes[thumbnails] > 150, got %f", dynamicMetrics[`rose_syncer_storage_bytes{type="thumbnails"}`])
+	}
+
+	// Unblock dyn-p2 and wait for Run completion
+	close(step2Allow)
+
+	var exitCode int
+	select {
+	case exitCode = <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Run to complete")
+	}
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	// 3. Final /metrics scrape
+	respFinal, err := http.Get(metricsURL)
+	if err != nil {
+		t.Fatalf("failed to scrape final metrics: %v", err)
+	}
+	finalBody, _ := io.ReadAll(respFinal.Body)
+	_ = respFinal.Body.Close()
+	finalMetrics := parsePrometheusMetrics(string(finalBody))
+
+	if finalMetrics["rose_syncer_photos_stored"] != 4 {
+		t.Errorf("expected final photos_stored=4, got %f", finalMetrics["rose_syncer_photos_stored"])
+	}
+	if finalMetrics["rose_syncer_thumbnails_stored"] != 3 {
+		t.Errorf("expected final thumbnails_stored=3, got %f", finalMetrics["rose_syncer_thumbnails_stored"])
+	}
+	if finalMetrics["rose_syncer_photos_downloaded_total"] != 2 {
+		t.Errorf("expected final photos_downloaded_total=2, got %f", finalMetrics["rose_syncer_photos_downloaded_total"])
+	}
+	if finalMetrics["rose_syncer_thumbnails_generated_total"] != 2 {
+		t.Errorf("expected final thumbnails_generated_total=2, got %f", finalMetrics["rose_syncer_thumbnails_generated_total"])
+	}
+}
+
 

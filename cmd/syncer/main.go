@@ -483,6 +483,7 @@ func main() {
 	}
 
 	m := metrics.NewMetrics()
+	m.ScanStorage(cfg.StoragePath)
 	_, server, err := startMetricsServer(cfg.MetricsPort, m.Handler())
 	if err != nil {
 		log.Printf("fatal: metrics port %d already bound or cannot be listened on: %v", cfg.MetricsPort, err)

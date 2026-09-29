@@ -1572,6 +1572,109 @@ func TestRun_IngestionLoopStoredMetricsAndReconciliation(t *testing.T) {
 	}
 }
 
+func TestRun_DeferredReconciliationOnEarlyExitOrError(t *testing.T) {
+	t.Run("ReconciliationOnFetchError", func(t *testing.T) {
+		tempDir := t.TempDir()
+		store := storage.NewStore(tempDir)
+		imagesDir := filepath.Join(tempDir, "images")
+		thumbnailsDir := filepath.Join(tempDir, "thumbnails")
+		if err := os.MkdirAll(imagesDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(thumbnailsDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		// Initial files
+		if err := os.WriteFile(filepath.Join(imagesDir, "init1.jpg"), make([]byte, 100), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(thumbnailsDir, "init1.webp"), make([]byte, 50), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		m := metrics.NewMetrics()
+		photoSvc := &mockPhotoService{
+			onFetchPhotos: func() {
+				// Simulate out-of-band file written or altered before fetch failure occurs
+				_ = os.WriteFile(filepath.Join(imagesDir, "out-of-band.jpg"), make([]byte, 250), 0644)
+				_ = os.WriteFile(filepath.Join(thumbnailsDir, "out-of-band.webp"), make([]byte, 75), 0644)
+			},
+			fetchErr: errors.New("simulated fetch error"),
+		}
+		visionSvc := &mockVisionService{}
+
+		exitCode := Run(context.Background(), "https://photos.app.goo.gl/fail", tempDir, photoSvc, visionSvc, store, nil, m)
+		if exitCode != 1 {
+			t.Fatalf("expected exit code 1 on fetch error, got %d", exitCode)
+		}
+
+		// Verify deferred ScanStorage ran and reconciled disk metrics despite early exit
+		values, storageBytes := gatherMetricValues(t, m)
+		if got := values["rose_syncer_photos_stored"]; got != 2 {
+			t.Errorf("expected reconciled photos_stored=2, got %f", got)
+		}
+		if got := values["rose_syncer_thumbnails_stored"]; got != 2 {
+			t.Errorf("expected reconciled thumbnails_stored=2, got %f", got)
+		}
+		if got := storageBytes["images"]; got != 350 {
+			t.Errorf("expected reconciled storage_bytes[images]=350, got %f", got)
+		}
+		if got := storageBytes["thumbnails"]; got != 125 {
+			t.Errorf("expected reconciled storage_bytes[thumbnails]=125, got %f", got)
+		}
+	})
+
+	t.Run("ReconciliationOnDownloadRateLimitEarlyExit", func(t *testing.T) {
+		tempDir := t.TempDir()
+		store := storage.NewStore(tempDir)
+		imagesDir := filepath.Join(tempDir, "images")
+		thumbnailsDir := filepath.Join(tempDir, "thumbnails")
+		if err := os.MkdirAll(imagesDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(thumbnailsDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(filepath.Join(imagesDir, "base.jpg"), make([]byte, 120), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(thumbnailsDir, "base.webp"), make([]byte, 60), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		m := metrics.NewMetrics()
+		photoSvc := &mockPhotoService{
+			photos: []photos.Photo{
+				{ID: "rl-photo", DownloadURL: "https://photos.app.goo.gl/rl"},
+			},
+			downloadErr: photos.ErrRateLimited,
+		}
+		visionSvc := &mockVisionService{}
+
+		exitCode := Run(context.Background(), "https://photos.app.goo.gl/rl-album", tempDir, photoSvc, visionSvc, store, nil, m)
+		if exitCode != 1 {
+			t.Fatalf("expected exit code 1 on download rate limit abort, got %d", exitCode)
+		}
+
+		values, storageBytes := gatherMetricValues(t, m)
+		if got := values["rose_syncer_photos_stored"]; got != 1 {
+			t.Errorf("expected photos_stored=1, got %f", got)
+		}
+		if got := values["rose_syncer_thumbnails_stored"]; got != 1 {
+			t.Errorf("expected thumbnails_stored=1, got %f", got)
+		}
+		if got := storageBytes["images"]; got != 120 {
+			t.Errorf("expected storage_bytes[images]=120, got %f", got)
+		}
+		if got := storageBytes["thumbnails"]; got != 60 {
+			t.Errorf("expected storage_bytes[thumbnails]=60, got %f", got)
+		}
+	})
+}
+
+
 
 
 
