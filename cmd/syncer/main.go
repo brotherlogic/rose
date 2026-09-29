@@ -132,11 +132,8 @@ func reportFailure(reporter github.IssueReporter, report github.FailureReport) {
 // and populating ThumbnailPath if found, or falling back to empty string if absent or store is nil.
 func buildArtwork(photoID, description, theme string, store *storage.Store) *gallery.Artwork {
 	thumbnailPath := ""
-	if store != nil {
-		thumbFile := filepath.Join(store.BasePath, "thumbnails", photoID+".webp")
-		if fi, err := os.Stat(thumbFile); err == nil && !fi.IsDir() {
-			thumbnailPath = "thumbnails/" + photoID + ".webp"
-		}
+	if store != nil && store.HasThumbnail(photoID) {
+		thumbnailPath = "thumbnails/" + photoID + ".webp"
 	}
 
 	return &gallery.Artwork{
@@ -269,7 +266,90 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			continue
 		}
 		if processed {
-			log.Printf("Photo %s already processed, skipping", photo.ID)
+			if store.HasThumbnail(photo.ID) {
+				log.Printf("Photo %s already processed, skipping", photo.ID)
+				continue
+			}
+
+			if !store.HasImage(photo.ID) {
+				log.Printf("Photo %s already processed, skipping", photo.ID)
+				continue
+			}
+
+			log.Printf("Photo %s already processed but missing thumbnail, backfilling thumbnail", photo.ID)
+			imgBytes, err := store.ReadImage(photo.ID)
+			if err != nil {
+				m.IncSyncErrors()
+				log.Printf("Error reading existing image for %s: %v", photo.ID, err)
+				errorCount++
+				continue
+			}
+
+			thumbBytes, err := thumbnail.GenerateThumbnail(imgBytes)
+			if err != nil {
+				m.IncSyncErrors()
+				log.Printf("Error generating thumbnail for %s: %v", photo.ID, err)
+				errorCount++
+				continue
+			}
+
+			if err := store.WriteThumbnail(photo.ID, thumbBytes); err != nil {
+				m.IncSyncErrors()
+				log.Printf("Error writing thumbnail %s: %v, aborting immediately", photo.ID, err)
+				reportFailure(reporter, github.FailureReport{
+					Stage:            "Storage Persistence",
+					Timestamp:        time.Now().UTC(),
+					Error:            err,
+					PhotosFetched:    fetchedCount,
+					PhotosAttempted:  attemptedCount,
+					PhotosSuccessful: successCount,
+					LogSummary:       fmt.Sprintf("error writing thumbnail %s: %v", photo.ID, err),
+				})
+				return 1
+			}
+
+			m.IncThumbnailsGenerated()
+			m.IncStoredThumbnails()
+			m.UpdateStorageBytes(storagePath)
+
+			// Update artwork proto metadata with ThumbnailPath if needed.
+			protoBytes, err := store.ReadArtworkProto(photo.ID)
+			if err == nil {
+				var artwork gallery.Artwork
+				if err := proto.Unmarshal(protoBytes, &artwork); err == nil {
+					expectedThumbPath := "thumbnails/" + photo.ID + ".webp"
+					if artwork.GetThumbnailPath() != expectedThumbPath {
+						artwork.ThumbnailPath = expectedThumbPath
+						updatedProtoBytes, err := proto.Marshal(&artwork)
+						if err != nil {
+							m.IncSyncErrors()
+							log.Printf("Error marshaling updated artwork proto for %s: %v", photo.ID, err)
+						} else {
+							if err := store.WriteArtworkProto(photo.ID, updatedProtoBytes); err != nil {
+								m.IncSyncErrors()
+								log.Printf("Error writing updated artwork proto for %s: %v, aborting immediately", photo.ID, err)
+								reportFailure(reporter, github.FailureReport{
+									Stage:            "Storage Persistence",
+									Timestamp:        time.Now().UTC(),
+									Error:            err,
+									PhotosFetched:    fetchedCount,
+									PhotosAttempted:  attemptedCount,
+									PhotosSuccessful: successCount,
+									LogSummary:       fmt.Sprintf("error writing updated artwork proto for %s: %v", photo.ID, err),
+								})
+								return 1
+							}
+						}
+					}
+				} else {
+					m.IncSyncErrors()
+					log.Printf("Error unmarshaling artwork proto for %s: %v", photo.ID, err)
+				}
+			} else if !os.IsNotExist(err) {
+				m.IncSyncErrors()
+				log.Printf("Error reading artwork proto for %s: %v", photo.ID, err)
+			}
+
 			continue
 		}
 

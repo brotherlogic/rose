@@ -256,3 +256,141 @@ func TestWrite_AutoCreateDirectories(t *testing.T) {
 	}
 }
 
+func TestStorage_ReadImage(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	data := []byte("image-data-payload")
+	if err := store.WriteImage("photo1", data); err != nil {
+		t.Fatalf("failed to write image: %v", err)
+	}
+
+	readBytes, err := store.ReadImage("photo1")
+	if err != nil {
+		t.Fatalf("failed to read image: %v", err)
+	}
+	if string(readBytes) != string(data) {
+		t.Errorf("expected %q, got %q", string(data), string(readBytes))
+	}
+
+	// Missing image
+	_, err = store.ReadImage("nonexistent")
+	if err == nil {
+		t.Errorf("expected error reading nonexistent image, got nil")
+	}
+
+	// Invalid ID / path traversal
+	_, err = store.ReadImage("../traversal")
+	if err == nil {
+		t.Errorf("expected error for path traversal id, got nil")
+	}
+}
+
+func TestStorage_HasThumbnail(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	// Initially false
+	if store.HasThumbnail("photo1") {
+		t.Errorf("expected HasThumbnail to be false initially")
+	}
+
+	// Nil store
+	var nilStore *Store
+	if nilStore.HasThumbnail("photo1") {
+		t.Errorf("expected nil store HasThumbnail to be false")
+	}
+
+	// Invalid ID
+	if store.HasThumbnail("../bad") {
+		t.Errorf("expected HasThumbnail to be false for invalid id")
+	}
+
+	// Write thumbnail
+	if err := store.WriteThumbnail("photo1", []byte("webp-data")); err != nil {
+		t.Fatalf("failed to write thumbnail: %v", err)
+	}
+	if !store.HasThumbnail("photo1") {
+		t.Errorf("expected HasThumbnail to be true after writing thumbnail")
+	}
+
+	// Directory instead of file
+	dirPath := filepath.Join(tempDir, "thumbnails", "dir-thumb.webp")
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
+	if store.HasThumbnail("dir-thumb") {
+		t.Errorf("expected HasThumbnail to be false when path is a directory")
+	}
+}
+
+func TestStorage_ReadArtworkProto(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	protoData := []byte("proto-binary-bytes")
+	if err := store.WriteArtworkProto("photo1", protoData); err != nil {
+		t.Fatalf("failed to write artwork proto: %v", err)
+	}
+
+	readBytes, err := store.ReadArtworkProto("photo1")
+	if err != nil {
+		t.Fatalf("failed to read artwork proto: %v", err)
+	}
+	if string(readBytes) != string(protoData) {
+		t.Errorf("expected %q, got %q", string(protoData), string(readBytes))
+	}
+
+	// Missing proto
+	_, err = store.ReadArtworkProto("nonexistent")
+	if err == nil {
+		t.Errorf("expected error reading nonexistent proto, got nil")
+	}
+
+	// Invalid ID
+	_, err = store.ReadArtworkProto("..")
+	if err == nil {
+		t.Errorf("expected error for invalid id, got nil")
+	}
+}
+
+func TestStorage_HasImage(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	// Initially false
+	if store.HasImage("photo1") {
+		t.Errorf("expected HasImage to be false initially")
+	}
+
+	// Nil store
+	var nilStore *Store
+	if nilStore.HasImage("photo1") {
+		t.Errorf("expected nil store HasImage to be false")
+	}
+
+	// Invalid ID
+	if store.HasImage("../bad") {
+		t.Errorf("expected HasImage to be false for invalid id")
+	}
+
+	// Write image
+	if err := store.WriteImage("photo1", []byte("img-data")); err != nil {
+		t.Fatalf("failed to write image: %v", err)
+	}
+	if !store.HasImage("photo1") {
+		t.Errorf("expected HasImage to be true after writing image")
+	}
+
+	// Directory instead of file
+	dirPath := filepath.Join(tempDir, "images", "dir-img.jpg")
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
+	if store.HasImage("dir-img") {
+		t.Errorf("expected HasImage to be false when path is a directory")
+	}
+}
+
+
+
