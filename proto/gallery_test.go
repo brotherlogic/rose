@@ -38,6 +38,7 @@ func TestArtwork_RoundTrip(t *testing.T) {
 		Timestamp:     1700000000,
 		ImagePath:     "images/mona-lisa.jpg",
 		ThumbnailPath: "thumbnails/123.webp",
+		Medium:        "Wax pigment on reclaimed cardboard",
 	}
 
 	data, err := proto.Marshal(original)
@@ -71,13 +72,28 @@ func TestArtwork_RoundTrip(t *testing.T) {
 	if unmarshaled.GetThumbnailPath() != original.GetThumbnailPath() {
 		t.Errorf("ThumbnailPath mismatch: got %q, want %q", unmarshaled.GetThumbnailPath(), original.GetThumbnailPath())
 	}
+	if unmarshaled.GetMedium() != original.GetMedium() {
+		t.Errorf("Medium mismatch: got %q, want %q", unmarshaled.GetMedium(), original.GetMedium())
+	}
+}
+
+func TestArtwork_Medium(t *testing.T) {
+	artwork := &Artwork{
+		Id:     "art-medium-1",
+		Title:  "Medium Test",
+		Medium: "Wax pigment on reclaimed cardboard",
+	}
+
+	if artwork.GetMedium() != "Wax pigment on reclaimed cardboard" {
+		t.Errorf("Expected Medium 'Wax pigment on reclaimed cardboard', got %q", artwork.GetMedium())
+	}
 }
 
 func TestArtwork_BackwardCompatibility(t *testing.T) {
 	legacyArtwork := &Artwork{
 		Id:          "legacy-1",
 		Title:       "Legacy Artwork",
-		Description: "Encoded without field 7",
+		Description: "Encoded without field 7 and field 8",
 		ThemeId:     "classic",
 		Timestamp:   1600000000,
 		ImagePath:   "images/legacy.jpg",
@@ -96,5 +112,17 @@ func TestArtwork_BackwardCompatibility(t *testing.T) {
 	if unmarshaled.GetThumbnailPath() != "" {
 		t.Errorf("Expected empty ThumbnailPath for legacy payload, got %q", unmarshaled.GetThumbnailPath())
 	}
+	if unmarshaled.GetMedium() != "" {
+		t.Errorf("Expected empty Medium for legacy payload, got %q", unmarshaled.GetMedium())
+	}
 }
+
+func TestArtwork_MalformedPayload(t *testing.T) {
+	corrupted := []byte{0xff, 0xff, 0xff, 0xff}
+	artwork := &Artwork{}
+	if err := proto.Unmarshal(corrupted, artwork); err == nil {
+		t.Fatalf("Expected error unmarshaling corrupted payload, got nil")
+	}
+}
+
 

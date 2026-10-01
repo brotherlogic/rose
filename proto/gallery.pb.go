@@ -30,6 +30,7 @@ type Artwork struct {
 	Timestamp     int64                  `protobuf:"varint,5,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // Original EXIF date or upload date
 	ImagePath     string                 `protobuf:"bytes,6,opt,name=image_path,json=imagePath,proto3" json:"image_path,omitempty"`
 	ThumbnailPath string                 `protobuf:"bytes,7,opt,name=thumbnail_path,json=thumbnailPath,proto3" json:"thumbnail_path,omitempty"`
+	Medium        string                 `protobuf:"bytes,8,opt,name=medium,proto3" json:"medium,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -113,6 +114,13 @@ func (x *Artwork) GetThumbnailPath() string {
 	return ""
 }
 
+func (x *Artwork) GetMedium() string {
+	if x != nil {
+		return x.Medium
+	}
+	return ""
+}
+
 type Theme struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -177,7 +185,7 @@ var File_proto_gallery_proto protoreflect.FileDescriptor
 
 const file_proto_gallery_proto_rawDesc = "" +
 	"\n" +
-	"\x13proto/gallery.proto\x12\agallery\"\xd0\x01\n" +
+	"\x13proto/gallery.proto\x12\agallery\"\xe8\x01\n" +
 	"\aArtwork\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
@@ -186,7 +194,8 @@ const file_proto_gallery_proto_rawDesc = "" +
 	"\ttimestamp\x18\x05 \x01(\x03R\ttimestamp\x12\x1d\n" +
 	"\n" +
 	"image_path\x18\x06 \x01(\tR\timagePath\x12%\n" +
-	"\x0ethumbnail_path\x18\a \x01(\tR\rthumbnailPath\"M\n" +
+	"\x0ethumbnail_path\x18\a \x01(\tR\rthumbnailPath\x12\x16\n" +
+	"\x06medium\x18\b \x01(\tR\x06medium\"M\n" +
 	"\x05Theme\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
