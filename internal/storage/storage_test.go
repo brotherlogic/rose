@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	gallerypb "github.com/brotherlogic/rose/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestStorageSyncState(t *testing.T) {
@@ -488,6 +491,89 @@ func TestStorage_MigrateLegacyImage(t *testing.T) {
 		t.Errorf("expected %q, got %q", string(legacyData), string(data))
 	}
 }
+
+func TestStorage_ArtworkProtoRoundTripWithMedium(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	// 1. Populated medium test case
+	const expectedMedium = "Wax pigment on reclaimed cardboard"
+	artwork := &gallerypb.Artwork{
+		Id:            "art-medium-roundtrip-1",
+		Title:         "Abstract Composition #4",
+		Description:   "Avant-garde mixed media exploration",
+		ThemeId:       "postmodern",
+		Timestamp:     1710000000,
+		ImagePath:     "images/art-medium-roundtrip-1.jpg",
+		ThumbnailPath: "thumbnails/art-medium-roundtrip-1.webp",
+		Medium:        expectedMedium,
+	}
+
+	data, err := proto.Marshal(artwork)
+	if err != nil {
+		t.Fatalf("failed to marshal artwork: %v", err)
+	}
+
+	if err := store.WriteArtworkProto(artwork.GetId(), data); err != nil {
+		t.Fatalf("failed to write artwork proto: %v", err)
+	}
+
+	readBytes, err := store.ReadArtworkProto(artwork.GetId())
+	if err != nil {
+		t.Fatalf("failed to read artwork proto: %v", err)
+	}
+
+	unmarshaled := &gallerypb.Artwork{}
+	if err := proto.Unmarshal(readBytes, unmarshaled); err != nil {
+		t.Fatalf("failed to unmarshal artwork proto: %v", err)
+	}
+
+	if unmarshaled.GetMedium() != expectedMedium {
+		t.Errorf("Medium mismatch: got %q, want %q", unmarshaled.GetMedium(), expectedMedium)
+	}
+	if unmarshaled.GetId() != artwork.GetId() {
+		t.Errorf("ID mismatch: got %q, want %q", unmarshaled.GetId(), artwork.GetId())
+	}
+	if unmarshaled.GetTitle() != artwork.GetTitle() {
+		t.Errorf("Title mismatch: got %q, want %q", unmarshaled.GetTitle(), artwork.GetTitle())
+	}
+
+	// 2. Legacy/empty payload verification: persist artwork without medium specified
+	legacyArtwork := &gallerypb.Artwork{
+		Id:            "art-legacy-roundtrip-2",
+		Title:         "Legacy Without Medium",
+		Description:   "Artwork without medium set",
+		ThemeId:       "classic",
+		Timestamp:     1650000000,
+		ImagePath:     "images/art-legacy-roundtrip-2.jpg",
+		ThumbnailPath: "thumbnails/art-legacy-roundtrip-2.webp",
+	}
+
+	legacyData, err := proto.Marshal(legacyArtwork)
+	if err != nil {
+		t.Fatalf("failed to marshal legacy artwork: %v", err)
+	}
+
+	if err := store.WriteArtworkProto(legacyArtwork.GetId(), legacyData); err != nil {
+		t.Fatalf("failed to write legacy artwork proto: %v", err)
+	}
+
+	readLegacyBytes, err := store.ReadArtworkProto(legacyArtwork.GetId())
+	if err != nil {
+		t.Fatalf("failed to read legacy artwork proto: %v", err)
+	}
+
+	unmarshaledLegacy := &gallerypb.Artwork{}
+	if err := proto.Unmarshal(readLegacyBytes, unmarshaledLegacy); err != nil {
+		t.Fatalf("failed to unmarshal legacy artwork proto: %v", err)
+	}
+
+	if unmarshaledLegacy.GetMedium() != "" {
+		t.Errorf("expected GetMedium() to safely default to empty string for legacy payload, got %q", unmarshaledLegacy.GetMedium())
+	}
+}
+
+
 
 
 
