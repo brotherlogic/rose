@@ -11,9 +11,9 @@ describe('Background Syncer Containerization Configuration (Dockerfile.syncer)',
   });
 
   describe('Builder Stage', () => {
-    it('should use golang:1.25-alpine as the builder base image', () => {
+    it('should use golang:1.26-alpine as the builder base image', () => {
       const content = fs.readFileSync(dockerfilePath, 'utf-8');
-      expect(content).toMatch(/FROM\s+golang:1\.25-alpine\s+AS\s+builder/i);
+      expect(content).toMatch(/FROM\s+golang:1\.26-alpine\s+AS\s+builder/i);
     });
 
     it('should install build prerequisites ca-certificates', () => {
