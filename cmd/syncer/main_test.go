@@ -565,7 +565,11 @@ func TestRun_AllAlreadyProcessed(t *testing.T) {
 	tempDir := t.TempDir()
 	store := storage.NewStore(tempDir)
 	_ = store.SaveProcessedPhoto("p1")
+	_ = store.WriteImage("p1", []byte("img1"))
+	_ = store.WriteThumbnail("p1", []byte("thumb1"))
 	_ = store.SaveProcessedPhoto("p2")
+	_ = store.WriteImage("p2", []byte("img2"))
+	_ = store.WriteThumbnail("p2", []byte("thumb2"))
 
 	photoSvc := &mockPhotoService{
 		photos: []photos.Photo{
@@ -1290,10 +1294,16 @@ func TestRun_LargeAlbumPaginationIntegration(t *testing.T) {
 		}
 	}
 
-	// Seed 200 photo IDs as already processed in .sync-state.json
+	// Seed 200 photo IDs as already processed in .sync-state.json and on disk
 	for i := 0; i < preProcessed; i++ {
 		if err := store.SaveProcessedPhoto(photoList[i].ID); err != nil {
 			t.Fatalf("failed to seed processed photo %s: %v", photoList[i].ID, err)
+		}
+		if err := store.WriteImage(photoList[i].ID, rawJPEG); err != nil {
+			t.Fatalf("failed to seed image %s: %v", photoList[i].ID, err)
+		}
+		if err := store.WriteThumbnail(photoList[i].ID, []byte("RIFFxxxxWEBP")); err != nil {
+			t.Fatalf("failed to seed thumbnail %s: %v", photoList[i].ID, err)
 		}
 	}
 
@@ -1820,7 +1830,7 @@ func TestBackfillMissingThumbnails_AlreadyHasThumbnail(t *testing.T) {
 	}
 }
 
-func TestBackfillMissingThumbnails_OriginalImageMissing(t *testing.T) {
+func TestProcessedPhoto_MissingImage_Redownloaded(t *testing.T) {
 	tempDir := t.TempDir()
 	store := storage.NewStore(tempDir)
 	photoID := "photo-no-image"
@@ -1840,17 +1850,168 @@ func TestBackfillMissingThumbnails_OriginalImageMissing(t *testing.T) {
 
 	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m)
 	if exitCode != 0 {
-		t.Fatalf("expected exit code 0 when original image is missing, got %d", exitCode)
+		t.Fatalf("expected exit code 0 when re-downloading missing image, got %d", exitCode)
+	}
+
+	if len(photoSvc.downloadCalls) != 1 {
+		t.Errorf("expected 1 download call for missing image, got %d", len(photoSvc.downloadCalls))
+	}
+	if !store.HasImage(photoID) {
+		t.Errorf("expected raw image to exist at images/%s.jpg", photoID)
+	}
+	if !store.HasThumbnail(photoID) {
+		t.Errorf("expected thumbnail to exist at thumbnails/%s.webp", photoID)
 	}
 
 	values, _ := gatherMetricValues(t, m)
 	if got := values["rose_syncer_sync_errors_total"]; got != 0 {
-		t.Errorf("expected 0 sync errors for missing image skip, got %f", got)
+		t.Errorf("expected 0 sync errors, got %f", got)
 	}
-	if got := values["rose_syncer_thumbnails_generated_total"]; got != 0 {
-		t.Errorf("expected 0 thumbnails generated, got %f", got)
+	if got := values["rose_syncer_photos_downloaded_total"]; got != 1 {
+		t.Errorf("expected 1 photo downloaded, got %f", got)
+	}
+	if got := values["rose_syncer_thumbnails_generated_total"]; got != 1 {
+		t.Errorf("expected 1 thumbnail generated, got %f", got)
+	}
+	if got := values["rose_syncer_photos_stored"]; got != 1 {
+		t.Errorf("expected 1 stored photo, got %f", got)
+	}
+	if got := values["rose_syncer_thumbnails_stored"]; got != 1 {
+		t.Errorf("expected 1 stored thumbnail, got %f", got)
 	}
 }
+
+func TestProcessedPhoto_LegacyImageMigrated(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(400, 300)
+	photoID := "legacy-photo-1"
+
+	if err := store.SaveProcessedPhoto(photoID); err != nil {
+		t.Fatalf("failed to mark processed: %v", err)
+	}
+	// Write legacy image directly into tempDir (basePath)
+	legacyPath := filepath.Join(tempDir, photoID+".jpg")
+	if err := os.WriteFile(legacyPath, rawJPEG, 0644); err != nil {
+		t.Fatalf("failed to write legacy image: %v", err)
+	}
+
+	// Write initial artwork proto without ThumbnailPath
+	initialArtwork := &gallery.Artwork{
+		Id:        photoID,
+		Title:     "Old Legacy Art",
+		ImagePath: photoID + ".jpg",
+	}
+	protoBytes, err := proto.Marshal(initialArtwork)
+	if err != nil {
+		t.Fatalf("failed to marshal initial artwork: %v", err)
+	}
+	if err := store.WriteArtworkProto(photoID, protoBytes); err != nil {
+		t.Fatalf("failed to write initial artwork proto: %v", err)
+	}
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: photoID, DownloadURL: "https://photos.google.com/legacy=w0-h0"},
+		},
+	}
+	visionSvc := &mockVisionService{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 when migrating legacy image, got %d", exitCode)
+	}
+
+	// Verify legacy file is moved
+	if store.HasLegacyImage(photoID) {
+		t.Errorf("expected legacy image file to no longer exist in root")
+	}
+	// Verify image is in images/
+	if !store.HasImage(photoID) {
+		t.Errorf("expected image to exist in images/")
+	}
+	// Verify thumbnail is in thumbnails/
+	if !store.HasThumbnail(photoID) {
+		t.Errorf("expected thumbnail to exist in thumbnails/")
+	}
+	// Verify no download call was made since legacy image was migrated
+	if len(photoSvc.downloadCalls) != 0 {
+		t.Errorf("expected 0 download calls, got %d", len(photoSvc.downloadCalls))
+	}
+	// Verify artwork proto updated with thumbnail path and image path
+	updatedProtoBytes, err := store.ReadArtworkProto(photoID)
+	if err != nil {
+		t.Fatalf("failed to read updated artwork proto: %v", err)
+	}
+	var updatedArtwork gallery.Artwork
+	if err := proto.Unmarshal(updatedProtoBytes, &updatedArtwork); err != nil {
+		t.Fatalf("failed to unmarshal updated artwork proto: %v", err)
+	}
+	if updatedArtwork.GetThumbnailPath() != "thumbnails/"+photoID+".webp" {
+		t.Errorf("expected ThumbnailPath %q, got %q", "thumbnails/"+photoID+".webp", updatedArtwork.GetThumbnailPath())
+	}
+	if updatedArtwork.GetImagePath() != "images/"+photoID+".jpg" {
+		t.Errorf("expected ImagePath %q, got %q", "images/"+photoID+".jpg", updatedArtwork.GetImagePath())
+	}
+
+	values, _ := gatherMetricValues(t, m)
+	if got := values["rose_syncer_sync_errors_total"]; got != 0 {
+		t.Errorf("expected 0 sync errors, got %f", got)
+	}
+	if got := values["rose_syncer_photos_downloaded_total"]; got != 0 {
+		t.Errorf("expected 0 photos downloaded, got %f", got)
+	}
+	if got := values["rose_syncer_thumbnails_generated_total"]; got != 1 {
+		t.Errorf("expected 1 thumbnail generated, got %f", got)
+	}
+	if got := values["rose_syncer_photos_stored"]; got != 1 {
+		t.Errorf("expected 1 stored photo gauge, got %f", got)
+	}
+	if got := values["rose_syncer_thumbnails_stored"]; got != 1 {
+		t.Errorf("expected 1 stored thumbnail gauge, got %f", got)
+	}
+}
+
+func TestProcessedPhoto_LegacyImageMigrationFailureAborts(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(400, 300)
+	photoID := "legacy-fail"
+
+	if err := store.SaveProcessedPhoto(photoID); err != nil {
+		t.Fatalf("failed to mark processed: %v", err)
+	}
+	legacyPath := filepath.Join(tempDir, photoID+".jpg")
+	if err := os.WriteFile(legacyPath, rawJPEG, 0644); err != nil {
+		t.Fatalf("failed to write legacy image: %v", err)
+	}
+
+	// Make images/ a read-only directory so migration (os.Rename/WriteFile) fails
+	imagesDir := filepath.Join(tempDir, "images")
+	if err := os.MkdirAll(imagesDir, 0555); err != nil {
+		t.Fatalf("failed to make images dir: %v", err)
+	}
+	defer os.Chmod(imagesDir, 0755)
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: photoID, DownloadURL: "https://photos.google.com/fail=w0-h0"},
+		},
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, m)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 on migration failure abort, got %d", exitCode)
+	}
+	if reporter.createCalls.Load() != 1 {
+		t.Errorf("expected 1 failure report, got %d", reporter.createCalls.Load())
+	}
+}
+
 
 func TestBackfillMissingThumbnails_CorruptedOriginalImage(t *testing.T) {
 	tempDir := t.TempDir()
