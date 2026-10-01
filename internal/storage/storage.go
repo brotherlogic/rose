@@ -151,5 +151,46 @@ func (s *Store) HasImage(id string) bool {
 	return err == nil && !fi.IsDir()
 }
 
+// HasLegacyImage returns true if a non-directory legacy image file exists at <basePath>/<id>.jpg.
+func (s *Store) HasLegacyImage(id string) bool {
+	if s == nil {
+		return false
+	}
+	if err := validateID(id); err != nil {
+		return false
+	}
+	filePath := filepath.Join(s.BasePath, id+".jpg")
+	fi, err := os.Stat(filePath)
+	return err == nil && !fi.IsDir()
+}
+
+// MigrateLegacyImage moves a legacy image file from <basePath>/<id>.jpg to <basePath>/images/<id>.jpg.
+func (s *Store) MigrateLegacyImage(id string) error {
+	if s == nil {
+		return fmt.Errorf("nil store")
+	}
+	if err := validateID(id); err != nil {
+		return err
+	}
+	legacyPath := filepath.Join(s.BasePath, id+".jpg")
+	imagesDir := filepath.Join(s.BasePath, "images")
+	if err := os.MkdirAll(imagesDir, 0755); err != nil {
+		return err
+	}
+	targetPath := filepath.Join(imagesDir, id+".jpg")
+	if err := os.Rename(legacyPath, targetPath); err != nil {
+		data, err := os.ReadFile(legacyPath)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(targetPath, data, 0644); err != nil {
+			return err
+		}
+		_ = os.Remove(legacyPath)
+	}
+	return nil
+}
+
+
 
 

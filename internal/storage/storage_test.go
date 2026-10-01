@@ -392,5 +392,103 @@ func TestStorage_HasImage(t *testing.T) {
 	}
 }
 
+func TestStorage_HasLegacyImage(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	// Initially false
+	if store.HasLegacyImage("photo1") {
+		t.Errorf("expected HasLegacyImage to be false initially")
+	}
+
+	// Nil store
+	var nilStore *Store
+	if nilStore.HasLegacyImage("photo1") {
+		t.Errorf("expected nil store HasLegacyImage to be false")
+	}
+
+	// Invalid ID
+	if store.HasLegacyImage("../bad") {
+		t.Errorf("expected HasLegacyImage to be false for invalid id")
+	}
+
+	// Write legacy image directly to root
+	legacyFile := filepath.Join(tempDir, "photo1.jpg")
+	if err := os.WriteFile(legacyFile, []byte("legacy-jpg-data"), 0644); err != nil {
+		t.Fatalf("failed to write legacy image file: %v", err)
+	}
+	if !store.HasLegacyImage("photo1") {
+		t.Errorf("expected HasLegacyImage to be true after writing file")
+	}
+
+	// Directory instead of file
+	dirPath := filepath.Join(tempDir, "dir-legacy.jpg")
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
+	if store.HasLegacyImage("dir-legacy") {
+		t.Errorf("expected HasLegacyImage to be false when path is a directory")
+	}
+}
+
+func TestStorage_MigrateLegacyImage(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	// Nil store
+	var nilStore *Store
+	if err := nilStore.MigrateLegacyImage("photo1"); err == nil {
+		t.Errorf("expected error migrating with nil store")
+	}
+
+	// Invalid ID
+	if err := store.MigrateLegacyImage("../bad"); err == nil {
+		t.Errorf("expected error migrating invalid id")
+	}
+
+	// Non-existent legacy file
+	if err := store.MigrateLegacyImage("nonexistent"); err == nil {
+		t.Errorf("expected error migrating nonexistent file")
+	}
+
+	// Create legacy file
+	legacyData := []byte("legacy-image-content")
+	legacyFile := filepath.Join(tempDir, "photo1.jpg")
+	if err := os.WriteFile(legacyFile, legacyData, 0644); err != nil {
+		t.Fatalf("failed to write legacy file: %v", err)
+	}
+
+	if !store.HasLegacyImage("photo1") {
+		t.Fatalf("expected HasLegacyImage to be true")
+	}
+	if store.HasImage("photo1") {
+		t.Fatalf("expected HasImage to be false before migration")
+	}
+
+	// Migrate
+	if err := store.MigrateLegacyImage("photo1"); err != nil {
+		t.Fatalf("failed to migrate legacy image: %v", err)
+	}
+
+	// Legacy file should no longer exist
+	if store.HasLegacyImage("photo1") {
+		t.Errorf("expected HasLegacyImage to be false after migration")
+	}
+
+	// Image should now exist in images/
+	if !store.HasImage("photo1") {
+		t.Errorf("expected HasImage to be true after migration")
+	}
+
+	data, err := store.ReadImage("photo1")
+	if err != nil {
+		t.Fatalf("failed to read migrated image: %v", err)
+	}
+	if string(data) != string(legacyData) {
+		t.Errorf("expected %q, got %q", string(legacyData), string(data))
+	}
+}
+
+
 
 
