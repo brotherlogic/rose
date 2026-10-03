@@ -3,6 +3,7 @@ package vision
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,14 +12,36 @@ import (
 	"time"
 )
 
-func TestAnalyzeImage_Success(t *testing.T) {
-	service := NewService()
-	desc, theme, err := service.AnalyzeImage(context.Background(), []byte("fake-image"))
+func TestAnalyzeImage_BackwardCompatibility(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"choices": [
+				{
+					"message": {
+						"content": "{\"title\": \"Mona Lisa\", \"medium\": \"Oil on Poplar\", \"description\": \"Portrait with enigmatic expression\", \"theme\": \"Renaissance\"}"
+					}
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	svc := NewService(
+		WithEndpoint(server.URL),
+		WithHTTPClient(server.Client()),
+	)
+
+	desc, theme, err := svc.AnalyzeImage(context.Background(), []byte("image-bytes"))
 	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+		t.Fatalf("expected no error from AnalyzeImage wrapper, got: %v", err)
 	}
-	if desc == "" || theme == "" {
-		t.Errorf("expected description and theme, got empty strings")
+	if desc != "Portrait with enigmatic expression" {
+		t.Errorf("expected description 'Portrait with enigmatic expression', got %q", desc)
+	}
+	if theme != "Renaissance" {
+		t.Errorf("expected theme 'Renaissance', got %q", theme)
 	}
 }
 
@@ -366,6 +389,173 @@ func TestAnalyze_MissingRequiredFields(t *testing.T) {
 				t.Errorf("expected nil result on validation failure, got %+v", res)
 			}
 		})
+	}
+}
+
+func TestAnalyze_TransientRetryRecovery(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`Service Unavailable`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"choices": [
+				{
+					"message": {
+						"content": "{\"title\": \"Sunflower\", \"medium\": \"Oil\", \"description\": \"Bright flowers\", \"theme\": \"Nature\"}"
+					}
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	svc := NewService(
+		WithEndpoint(server.URL),
+		WithHTTPClient(server.Client()),
+		WithMaxRetries(3),
+		WithInitialBackoff(5*time.Millisecond),
+	)
+
+	res, err := svc.Analyze(context.Background(), []byte("image-data"))
+	if err != nil {
+		t.Fatalf("expected successful recovery after retries, got: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 server attempts, got %d", attempts)
+	}
+	if res.Title != "Sunflower" || res.Theme != "Nature" {
+		t.Errorf("unexpected result: %+v", res)
+	}
+}
+
+func TestAnalyze_RetriesExhausted(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`Internal Server Error`))
+	}))
+	defer server.Close()
+
+	svc := NewService(
+		WithEndpoint(server.URL),
+		WithHTTPClient(server.Client()),
+		WithMaxRetries(2),
+		WithInitialBackoff(5*time.Millisecond),
+	)
+
+	res, err := svc.Analyze(context.Background(), []byte("image-data"))
+	if err == nil {
+		t.Fatal("expected error when retries exhausted, got nil")
+	}
+	if res != nil {
+		t.Errorf("expected nil result, got %+v", res)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts (1 initial + 2 retries), got %d", attempts)
+	}
+}
+
+func TestAnalyze_NonRetryable400(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`Bad Request: invalid prompt`))
+	}))
+	defer server.Close()
+
+	svc := NewService(
+		WithEndpoint(server.URL),
+		WithHTTPClient(server.Client()),
+		WithMaxRetries(3),
+		WithInitialBackoff(5*time.Millisecond),
+	)
+
+	res, err := svc.Analyze(context.Background(), []byte("image-data"))
+	if err == nil {
+		t.Fatal("expected error on HTTP 400, got nil")
+	}
+	if res != nil {
+		t.Errorf("expected nil result, got %+v", res)
+	}
+	if attempts != 1 {
+		t.Errorf("expected exactly 1 attempt with no retries on HTTP 400, got %d", attempts)
+	}
+}
+
+func TestAnalyze_ContextCancellation(t *testing.T) {
+	// Case 1: Context already cancelled before call
+	ctxCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	svc := NewService(
+		WithEndpoint("http://unused"),
+		WithMaxRetries(3),
+	)
+	_, err := svc.Analyze(ctxCancelled, []byte("image-data"))
+	if err == nil {
+		t.Fatal("expected error for cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+
+	// Case 2: Cancellation during retry backoff
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	ctxTimeout, cancelTimeout := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelTimeout()
+
+	svc2 := NewService(
+		WithEndpoint(server.URL),
+		WithHTTPClient(server.Client()),
+		WithMaxRetries(5),
+		WithInitialBackoff(100*time.Millisecond),
+	)
+
+	_, err2 := svc2.Analyze(ctxTimeout, []byte("image-data"))
+	if err2 == nil {
+		t.Fatal("expected error when context is cancelled during backoff, got nil")
+	}
+	if !errors.Is(err2, context.DeadlineExceeded) && !errors.Is(err2, context.Canceled) {
+		t.Errorf("expected context cancellation or deadline error, got %v", err2)
+	}
+}
+
+func TestAnalyze_PerAttemptTimeout(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	svc := NewService(
+		WithEndpoint(server.URL),
+		WithHTTPClient(server.Client()),
+		WithTimeout(25*time.Millisecond),
+		WithMaxRetries(1),
+		WithInitialBackoff(5*time.Millisecond),
+	)
+
+	_, err := svc.Analyze(context.Background(), []byte("image-data"))
+	if err == nil {
+		t.Fatal("expected error due to per-attempt timeout, got nil")
+	}
+	if attempts < 2 {
+		t.Errorf("expected at least 2 attempts (initial + retry) under timeout, got %d", attempts)
 	}
 }
 
