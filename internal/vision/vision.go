@@ -191,10 +191,14 @@ func cleanJSONResponse(content string) string {
 	return strings.TrimSpace(trimmed)
 }
 
-// Analyze performs multimodal vision analysis on the provided image payload.
+// Analyze performs multimodal vision analysis on the provided image payload with exponential backoff retries.
 func (s *Service) Analyze(ctx context.Context, img []byte) (*AnalysisResult, error) {
 	if len(img) == 0 {
 		return nil, errors.New("image payload cannot be empty")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	mimeType := http.DetectContentType(img)
@@ -240,62 +244,119 @@ func (s *Service) Analyze(ctx context.Context, img []byte) (*AnalysisResult, err
 		endpoint = strings.TrimRight(endpoint, "/") + "/chat/completions"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create http request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for attempt := 0; attempt <= s.cfg.MaxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 
-	resp, err := s.cfg.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("vision inference request failed: %w", err)
-	}
-	defer resp.Body.Close()
+		attemptCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+		req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to create http request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read vision inference response body: %w", err)
+		resp, err := s.cfg.HTTPClient.Do(req)
+		if err != nil {
+			cancel()
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			lastErr = fmt.Errorf("vision inference request failed: %w", err)
+			if attempt < s.cfg.MaxRetries {
+				delay := s.cfg.InitialBackoff * (1 << attempt)
+				select {
+				case <-time.After(delay):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			continue
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		cancel()
+
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			lastErr = fmt.Errorf("failed to read vision inference response body: %w", err)
+			if attempt < s.cfg.MaxRetries {
+				delay := s.cfg.InitialBackoff * (1 << attempt)
+				select {
+				case <-time.After(delay):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			continue
+		}
+
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return nil, fmt.Errorf("vision inference request failed with status %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("vision inference request failed with status %d: %s", resp.StatusCode, string(respBody))
+			if attempt < s.cfg.MaxRetries {
+				delay := s.cfg.InitialBackoff * (1 << attempt)
+				select {
+				case <-time.After(delay):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			continue
+		}
+
+		var chatResp chatCompletionResponse
+		if err := json.Unmarshal(respBody, &chatResp); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal chat completion response: %w", err)
+		}
+
+		if len(chatResp.Choices) == 0 {
+			return nil, errors.New("no completion choices returned by model")
+		}
+
+		cleanedContent := cleanJSONResponse(chatResp.Choices[0].Message.Content)
+
+		var result AnalysisResult
+		if err := json.Unmarshal([]byte(cleanedContent), &result); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal analysis result json: %w", err)
+		}
+
+		if strings.TrimSpace(result.Title) == "" {
+			return nil, errors.New("analysis result missing required field: title")
+		}
+		if strings.TrimSpace(result.Medium) == "" {
+			return nil, errors.New("analysis result missing required field: medium")
+		}
+		if strings.TrimSpace(result.Description) == "" {
+			return nil, errors.New("analysis result missing required field: description")
+		}
+		if strings.TrimSpace(result.Theme) == "" {
+			return nil, errors.New("analysis result missing required field: theme")
+		}
+
+		return &result, nil
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("vision inference request failed with status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var chatResp chatCompletionResponse
-	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal chat completion response: %w", err)
-	}
-
-	if len(chatResp.Choices) == 0 {
-		return nil, errors.New("no completion choices returned by model")
-	}
-
-	cleanedContent := cleanJSONResponse(chatResp.Choices[0].Message.Content)
-
-	var result AnalysisResult
-	if err := json.Unmarshal([]byte(cleanedContent), &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal analysis result json: %w", err)
-	}
-
-	if strings.TrimSpace(result.Title) == "" {
-		return nil, errors.New("analysis result missing required field: title")
-	}
-	if strings.TrimSpace(result.Medium) == "" {
-		return nil, errors.New("analysis result missing required field: medium")
-	}
-	if strings.TrimSpace(result.Description) == "" {
-		return nil, errors.New("analysis result missing required field: description")
-	}
-	if strings.TrimSpace(result.Theme) == "" {
-		return nil, errors.New("analysis result missing required field: theme")
-	}
-
-	return &result, nil
+	return nil, fmt.Errorf("vision inference retries exhausted: %w", lastErr)
 }
 
-// AnalyzeImage provides mock analysis for backward compatibility.
+// AnalyzeImage delegates to Analyze and returns (description, theme, nil) for backward compatibility.
 func (s *Service) AnalyzeImage(ctx context.Context, img []byte) (string, string, error) {
-	// Mock implementation
-	return "A beautiful landscape", "Nature", nil
+	res, err := s.Analyze(ctx, img)
+	if err != nil {
+		return "", "", err
+	}
+	return res.Description, res.Theme, nil
 }
 
