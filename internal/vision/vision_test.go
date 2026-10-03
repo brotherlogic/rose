@@ -2,7 +2,11 @@ package vision
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -147,3 +151,221 @@ func TestNewServiceWithConfig(t *testing.T) {
 		t.Errorf("expected http.DefaultClient fallback when HTTPClient is nil, got %v", svcDefaultClient.Config().HTTPClient)
 	}
 }
+
+func TestAnalyze_EmptyImagePayload(t *testing.T) {
+	svc := NewService()
+
+	// Empty slice
+	res, err := svc.Analyze(context.Background(), []byte{})
+	if err == nil {
+		t.Fatal("expected error for empty byte slice, got nil")
+	}
+	if res != nil {
+		t.Errorf("expected nil result, got %+v", res)
+	}
+	if !strings.Contains(err.Error(), "image payload cannot be empty") {
+		t.Errorf("expected 'image payload cannot be empty' error, got %v", err)
+	}
+
+	// Nil slice
+	res, err = svc.Analyze(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil byte slice, got nil")
+	}
+	if !strings.Contains(err.Error(), "image payload cannot be empty") {
+		t.Errorf("expected 'image payload cannot be empty' error, got %v", err)
+	}
+}
+
+func TestAnalyze_Success(t *testing.T) {
+	var requestBody map[string]interface{}
+	var requestHeader http.Header
+	var requestPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath = r.URL.Path
+		requestHeader = r.Header.Clone()
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(bodyBytes, &requestBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"choices": [
+				{
+					"message": {
+						"content": "{\"title\": \"Starry Night\", \"medium\": \"Oil on Canvas\", \"description\": \"A swirling night sky over a quiet town.\", \"theme\": \"Post-Impressionism\"}"
+					}
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	svc := NewService(
+		WithEndpoint(server.URL),
+		WithModel("test-vision-model"),
+		WithHTTPClient(server.Client()),
+	)
+
+	// Valid PNG bytes: standard 8-byte PNG signature
+	pngBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00}
+	res, err := svc.Analyze(context.Background(), pngBytes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if res == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if res.Title != "Starry Night" {
+		t.Errorf("expected title 'Starry Night', got %q", res.Title)
+	}
+	if res.Medium != "Oil on Canvas" {
+		t.Errorf("expected medium 'Oil on Canvas', got %q", res.Medium)
+	}
+	if res.Description != "A swirling night sky over a quiet town." {
+		t.Errorf("expected description 'A swirling night sky over a quiet town.', got %q", res.Description)
+	}
+	if res.Theme != "Post-Impressionism" {
+		t.Errorf("expected theme 'Post-Impressionism', got %q", res.Theme)
+	}
+
+	// Verify request headers
+	if ct := requestHeader.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %q", ct)
+	}
+
+	// Verify request path
+	if !strings.HasSuffix(requestPath, "/chat/completions") {
+		t.Errorf("expected path ending in /chat/completions, got %q", requestPath)
+	}
+
+	// Verify payload structure
+	if requestBody["model"] != "test-vision-model" {
+		t.Errorf("expected model 'test-vision-model', got %v", requestBody["model"])
+	}
+	respFormat, ok := requestBody["response_format"].(map[string]interface{})
+	if !ok || respFormat["type"] != "json_object" {
+		t.Errorf("expected response_format type json_object, got %v", requestBody["response_format"])
+	}
+
+	messages, ok := requestBody["messages"].([]interface{})
+	if !ok || len(messages) != 1 {
+		t.Fatalf("expected 1 user message, got %v", requestBody["messages"])
+	}
+	msgMap, ok := messages[0].(map[string]interface{})
+	if !ok || msgMap["role"] != "user" {
+		t.Fatalf("expected user role, got %v", messages[0])
+	}
+	contents, ok := msgMap["content"].([]interface{})
+	if !ok || len(contents) < 2 {
+		t.Fatalf("expected at least 2 content parts, got %v", msgMap["content"])
+	}
+
+	// Check text part
+	part0 := contents[0].(map[string]interface{})
+	if part0["type"] != "text" || !strings.Contains(part0["text"].(string), "title") {
+		t.Errorf("expected text prompt mentioning title, got %v", part0)
+	}
+
+	// Check image part
+	part1 := contents[1].(map[string]interface{})
+	if part1["type"] != "image_url" {
+		t.Errorf("expected image_url type, got %v", part1)
+	}
+	imgURLMap := part1["image_url"].(map[string]interface{})
+	dataURI := imgURLMap["url"].(string)
+	if !strings.HasPrefix(dataURI, "data:image/png;base64,") {
+		t.Errorf("expected data:image/png;base64, prefix, got %q", dataURI)
+	}
+}
+
+func TestAnalyze_MarkdownCodeFence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"choices": [
+				{
+					"message": {
+						"content": "\n` + "```json" + `\n{\n  \"title\": \"Water Lilies\",\n  \"medium\": \"Oil on Canvas\",\n  \"description\": \"Monet's water garden at Giverny.\",\n  \"theme\": \"Impressionism\"\n}\n` + "```" + `\n"
+					}
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	svc := NewService(
+		WithEndpoint(server.URL),
+		WithHTTPClient(server.Client()),
+	)
+
+	res, err := svc.Analyze(context.Background(), []byte("unrecognized-image-content-type"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if res.Title != "Water Lilies" || res.Medium != "Oil on Canvas" || res.Description != "Monet's water garden at Giverny." || res.Theme != "Impressionism" {
+		t.Errorf("unexpected parsed result: %+v", res)
+	}
+}
+
+func TestAnalyze_MissingRequiredFields(t *testing.T) {
+	tests := []struct {
+		name        string
+		jsonContent string
+	}{
+		{
+			name:        "missing medium",
+			jsonContent: `{"title": "Art", "description": "Desc", "theme": "Theme"}`,
+		},
+		{
+			name:        "empty theme",
+			jsonContent: `{"title": "Art", "medium": "Oil", "description": "Desc", "theme": ""}`,
+		},
+		{
+			name:        "missing title",
+			jsonContent: `{"medium": "Oil", "description": "Desc", "theme": "Theme"}`,
+		},
+		{
+			name:        "whitespace only description",
+			jsonContent: `{"title": "Art", "medium": "Oil", "description": "   ", "theme": "Theme"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"choices": []map[string]interface{}{
+						{
+							"message": map[string]string{
+								"content": tt.jsonContent,
+							},
+						},
+					},
+				})
+			}))
+			defer server.Close()
+
+			svc := NewService(
+				WithEndpoint(server.URL),
+				WithHTTPClient(server.Client()),
+			)
+
+			res, err := svc.Analyze(context.Background(), []byte("some-image-data"))
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil result: %+v", tt.name, res)
+			}
+			if res != nil {
+				t.Errorf("expected nil result on validation failure, got %+v", res)
+			}
+		})
+	}
+}
+
