@@ -1,10 +1,17 @@
 package vision
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -139,8 +146,156 @@ func NewService(opts ...Option) *Service {
 	return &Service{cfg: cfg}
 }
 
+type chatMessageContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
+}
+
+type chatImageURL struct {
+	URL string `json:"url"`
+}
+
+type chatMessage struct {
+	Role    string                   `json:"role"`
+	Content []chatMessageContentPart `json:"content"`
+}
+
+type chatCompletionRequest struct {
+	Model          string            `json:"model"`
+	Messages       []chatMessage     `json:"messages"`
+	ResponseFormat map[string]string `json:"response_format"`
+}
+
+type chatCompletionResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
+func cleanJSONResponse(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "```") {
+		trimmed = strings.TrimPrefix(trimmed, "```")
+		if strings.HasPrefix(trimmed, "json\n") || strings.HasPrefix(trimmed, "json\r\n") {
+			trimmed = strings.TrimPrefix(trimmed, "json")
+		} else if idx := strings.Index(trimmed, "\n"); idx != -1 && !strings.Contains(trimmed[:idx], "{") {
+			trimmed = trimmed[idx+1:]
+		}
+		if idx := strings.LastIndex(trimmed, "```"); idx != -1 {
+			trimmed = trimmed[:idx]
+		}
+	}
+	return strings.TrimSpace(trimmed)
+}
+
+// Analyze performs multimodal vision analysis on the provided image payload.
+func (s *Service) Analyze(ctx context.Context, img []byte) (*AnalysisResult, error) {
+	if len(img) == 0 {
+		return nil, errors.New("image payload cannot be empty")
+	}
+
+	mimeType := http.DetectContentType(img)
+	if !strings.HasPrefix(mimeType, "image/") {
+		mimeType = "image/jpeg"
+	}
+
+	dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(img))
+
+	textPrompt := "Analyze the artwork image. Provide a valid JSON response with keys: 'title', 'medium', 'description', and 'theme'."
+
+	reqPayload := chatCompletionRequest{
+		Model: s.cfg.Model,
+		Messages: []chatMessage{
+			{
+				Role: "user",
+				Content: []chatMessageContentPart{
+					{
+						Type: "text",
+						Text: textPrompt,
+					},
+					{
+						Type: "image_url",
+						ImageURL: &chatImageURL{
+							URL: dataURI,
+						},
+					},
+				},
+			},
+		},
+		ResponseFormat: map[string]string{
+			"type": "json_object",
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqPayload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal chat completion request: %w", err)
+	}
+
+	endpoint := s.cfg.Endpoint
+	if !strings.HasSuffix(endpoint, "/chat/completions") {
+		endpoint = strings.TrimRight(endpoint, "/") + "/chat/completions"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create http request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("vision inference request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read vision inference response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("vision inference request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var chatResp chatCompletionResponse
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal chat completion response: %w", err)
+	}
+
+	if len(chatResp.Choices) == 0 {
+		return nil, errors.New("no completion choices returned by model")
+	}
+
+	cleanedContent := cleanJSONResponse(chatResp.Choices[0].Message.Content)
+
+	var result AnalysisResult
+	if err := json.Unmarshal([]byte(cleanedContent), &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal analysis result json: %w", err)
+	}
+
+	if strings.TrimSpace(result.Title) == "" {
+		return nil, errors.New("analysis result missing required field: title")
+	}
+	if strings.TrimSpace(result.Medium) == "" {
+		return nil, errors.New("analysis result missing required field: medium")
+	}
+	if strings.TrimSpace(result.Description) == "" {
+		return nil, errors.New("analysis result missing required field: description")
+	}
+	if strings.TrimSpace(result.Theme) == "" {
+		return nil, errors.New("analysis result missing required field: theme")
+	}
+
+	return &result, nil
+}
+
 // AnalyzeImage provides mock analysis for backward compatibility.
 func (s *Service) AnalyzeImage(ctx context.Context, img []byte) (string, string, error) {
 	// Mock implementation
 	return "A beautiful landscape", "Nature", nil
 }
+
