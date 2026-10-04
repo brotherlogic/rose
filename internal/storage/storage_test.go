@@ -3,6 +3,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	gallerypb "github.com/brotherlogic/rose/proto"
@@ -572,6 +573,175 @@ func TestStorage_ArtworkProtoRoundTripWithMedium(t *testing.T) {
 		t.Errorf("expected GetMedium() to safely default to empty string for legacy payload, got %q", unmarshaledLegacy.GetMedium())
 	}
 }
+
+func TestWriteArtworkProtoAtomic_Success(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	data := []byte("binary-protobuf-payload-12345")
+	id := "photo-atomic-success-1"
+
+	err := store.WriteArtworkProtoAtomic(id, data)
+	if err != nil {
+		t.Fatalf("expected WriteArtworkProtoAtomic to succeed, got: %v", err)
+	}
+
+	targetPath := filepath.Join(tempDir, id+".proto.bin")
+	fi, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("expected destination file %s to exist: %v", targetPath, err)
+	}
+
+	if fi.Mode().Perm() != 0644 {
+		t.Errorf("expected file permissions 0644, got %v", fi.Mode().Perm())
+	}
+
+	readBytes, err := store.ReadArtworkProto(id)
+	if err != nil {
+		t.Fatalf("expected ReadArtworkProto to succeed: %v", err)
+	}
+	if string(readBytes) != string(data) {
+		t.Errorf("read data mismatch: got %q, want %q", string(readBytes), string(data))
+	}
+}
+
+func TestWriteArtworkProtoAtomic_TempFileCleanup(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	data := []byte("test-cleanup-bytes")
+	id := "photo-atomic-cleanup"
+
+	err := store.WriteArtworkProtoAtomic(id, data)
+	if err != nil {
+		t.Fatalf("WriteArtworkProtoAtomic failed: %v", err)
+	}
+
+	// Verify no dangling .tmp-* files remain in BasePath
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("failed to read dir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Errorf("found dangling temporary file: %s", entry.Name())
+		}
+	}
+
+	// Verify cleanup when writing to an invalid or unwritable destination
+	readOnlyDir := filepath.Join(tempDir, "readonly")
+	if err := os.MkdirAll(readOnlyDir, 0755); err != nil {
+		t.Fatalf("failed to create readonly dir: %v", err)
+	}
+	collidingDest := filepath.Join(readOnlyDir, "blocked-id.proto.bin")
+	if err := os.MkdirAll(collidingDest, 0755); err != nil {
+		t.Fatalf("failed to create colliding directory: %v", err)
+	}
+
+	roStore := NewStore(readOnlyDir)
+	err = roStore.WriteArtworkProtoAtomic("blocked-id", data)
+	if err == nil {
+		t.Fatalf("expected WriteArtworkProtoAtomic to fail when renaming onto a non-empty directory")
+	}
+
+	roEntries, err := os.ReadDir(readOnlyDir)
+	if err != nil {
+		t.Fatalf("failed to read readonly dir: %v", err)
+	}
+	for _, entry := range roEntries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Errorf("found dangling temporary file after failure: %s", entry.Name())
+		}
+	}
+}
+
+func TestWriteArtworkProtoAtomic_InvalidID(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	data := []byte("proto-payload")
+	invalidIDs := []string{
+		"",
+		".",
+		"..",
+		"../photo",
+		"../../etc/passwd",
+		"/root/file",
+		"sub/dir",
+		"path\\with\\backslash",
+		"foo/../bar",
+	}
+
+	for _, id := range invalidIDs {
+		t.Run(id, func(t *testing.T) {
+			err := store.WriteArtworkProtoAtomic(id, data)
+			if err == nil {
+				t.Fatalf("expected error for invalid ID %q, got nil", id)
+			}
+		})
+	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("failed to read tempDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected no files written in base directory for invalid IDs, found %d entries", len(entries))
+	}
+}
+
+func TestSaveSyncStateAtomic(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	state := map[string]bool{
+		"photo-1": true,
+		"photo-2": false,
+		"photo-3": true,
+	}
+
+	err := store.saveSyncState(state)
+	if err != nil {
+		t.Fatalf("expected saveSyncState to succeed, got: %v", err)
+	}
+
+	// Verify .sync-state.json exists and has 0644 permissions
+	statPath := store.syncStatePath()
+	fi, err := os.Stat(statPath)
+	if err != nil {
+		t.Fatalf("expected sync state file to exist: %v", err)
+	}
+	if fi.Mode().Perm() != 0644 {
+		t.Errorf("expected sync state file permission 0644, got %v", fi.Mode().Perm())
+	}
+
+	// Verify no dangling .tmp-* files remain
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("failed to read dir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Errorf("found dangling temporary file: %s", entry.Name())
+		}
+	}
+
+	// Reload state via loadSyncState
+	loadedState, err := store.loadSyncState()
+	if err != nil {
+		t.Fatalf("expected loadSyncState to succeed, got: %v", err)
+	}
+
+	if len(loadedState) != len(state) {
+		t.Fatalf("loaded state count mismatch: got %d, want %d", len(loadedState), len(state))
+	}
+	for k, v := range state {
+		if loadedState[k] != v {
+			t.Errorf("loaded state mismatch for key %q: got %v, want %v", k, loadedState[k], v)
+		}
+	}
+}
+
 
 
 
