@@ -562,3 +562,140 @@ func TestAnnotationMetrics_RegistrationAndRecording(t *testing.T) {
 	}
 }
 
+func TestMetrics_CurationRegistration(t *testing.T) {
+	m := NewMetrics()
+	if m == nil {
+		t.Fatal("expected non-nil Metrics instance")
+	}
+
+	// Verify nil-receiver safety
+	var nilM *Metrics
+	nilM.SetArtworksAnnotated(10)
+	nilM.SetArtisticMovement("cubism", 3)
+	nilM.ResetArtisticMovements()
+
+	// Initial default verification: artworksAnnotated should be registered and 0
+	mfs, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("failed to gather registered metrics: %v", err)
+	}
+
+	mfMap := make(map[string]*dto.MetricFamily)
+	for _, mf := range mfs {
+		mfMap[mf.GetName()] = mf
+	}
+
+	if _, ok := mfMap["rose_syncer_artworks_annotated_total"]; !ok {
+		t.Fatalf("expected metric rose_syncer_artworks_annotated_total to be registered in registry")
+	}
+
+	if val := mfMap["rose_syncer_artworks_annotated_total"].GetMetric()[0].GetGauge().GetValue(); val != 0 {
+		t.Errorf("expected default artworksAnnotated=0, got %f", val)
+	}
+
+	// Set values for curation metrics
+	m.SetArtworksAnnotated(42)
+	m.SetArtisticMovement("surrealism", 12)
+	m.SetArtisticMovement("impressionism", 7)
+
+	mfs, err = m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("failed to gather registered metrics: %v", err)
+	}
+	mfMap = make(map[string]*dto.MetricFamily)
+	for _, mf := range mfs {
+		mfMap[mf.GetName()] = mf
+	}
+
+	if _, ok := mfMap["rose_syncer_artworks_annotated_total"]; !ok {
+		t.Fatalf("expected metric rose_syncer_artworks_annotated_total to be gathered")
+	}
+	if _, ok := mfMap["rose_syncer_artistic_movements_total"]; !ok {
+		t.Fatalf("expected metric rose_syncer_artistic_movements_total to be gathered")
+	}
+
+	if val := mfMap["rose_syncer_artworks_annotated_total"].GetMetric()[0].GetGauge().GetValue(); val != 42 {
+		t.Errorf("expected artworksAnnotated=42, got %f", val)
+	}
+
+	movements := make(map[string]float64)
+	for _, metric := range mfMap["rose_syncer_artistic_movements_total"].GetMetric() {
+		for _, label := range metric.GetLabel() {
+			if label.GetName() == "theme" {
+				movements[label.GetValue()] = metric.GetGauge().GetValue()
+			}
+		}
+	}
+	if movements["surrealism"] != 12 {
+		t.Errorf("expected surrealism=12, got %f", movements["surrealism"])
+	}
+	if movements["impressionism"] != 7 {
+		t.Errorf("expected impressionism=7, got %f", movements["impressionism"])
+	}
+
+	// Reset artistic movements and re-populate
+	m.ResetArtisticMovements()
+	mfs, err = m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("failed to gather registered metrics after reset: %v", err)
+	}
+	mfMap = make(map[string]*dto.MetricFamily)
+	for _, mf := range mfs {
+		mfMap[mf.GetName()] = mf
+	}
+	if mf, ok := mfMap["rose_syncer_artistic_movements_total"]; ok && len(mf.GetMetric()) > 0 {
+		t.Errorf("expected artisticMovements to be empty after reset, got %d metrics", len(mf.GetMetric()))
+	}
+
+	m.SetArtisticMovement("modernism", 5)
+	mfs, err = m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("failed to gather registered metrics after set: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == "rose_syncer_artistic_movements_total" {
+			if len(mf.GetMetric()) != 1 || mf.GetMetric()[0].GetGauge().GetValue() != 5 {
+				t.Errorf("expected single metric with value 5 for modernism")
+			}
+		}
+	}
+}
+
+func TestMetrics_Handler_CurationExposition(t *testing.T) {
+	m := NewMetrics()
+	m.SetArtworksAnnotated(15)
+	m.SetArtisticMovement("renaissance", 8)
+
+	server := httptest.NewServer(m.Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatalf("failed to GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+
+	bodyStr := string(body)
+	expectedStrings := []string{
+		"# TYPE rose_syncer_artworks_annotated_total gauge",
+		"rose_syncer_artworks_annotated_total 15",
+		"# TYPE rose_syncer_artistic_movements_total gauge",
+		`rose_syncer_artistic_movements_total{theme="renaissance"} 8`,
+	}
+
+	for _, expected := range expectedStrings {
+		if !strings.Contains(bodyStr, expected) {
+			t.Errorf("response body does not contain expected string %q\nBody:\n%s", expected, bodyStr)
+		}
+	}
+}
+
