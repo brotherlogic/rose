@@ -25,6 +25,8 @@ type Metrics struct {
 	annotationDuration  prometheus.Histogram
 	annotationErrors    prometheus.Counter
 	themesRecorded      *prometheus.CounterVec
+	artworksAnnotated   prometheus.Gauge
+	artisticMovements   *prometheus.GaugeVec
 }
 
 // NewMetrics initializes and registers all syncer operational telemetry collectors.
@@ -92,6 +94,16 @@ func NewMetrics() *Metrics {
 		Help: "Total count of artworks recorded per thematic category.",
 	}, []string{"theme"})
 
+	artworksAnnotated := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rose_syncer_artworks_annotated_total",
+		Help: "Total count of serialized artwork proto files physically stored on disk.",
+	})
+
+	artisticMovements := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rose_syncer_artistic_movements_total",
+		Help: "Total count of artworks recorded per artistic movement.",
+	}, []string{"theme"})
+
 	reg.MustRegister(
 		photosDiscovered,
 		photosDownloaded,
@@ -105,6 +117,8 @@ func NewMetrics() *Metrics {
 		annotationDuration,
 		annotationErrors,
 		themesRecorded,
+		artworksAnnotated,
+		artisticMovements,
 	)
 
 	photosStored.Set(0)
@@ -113,6 +127,7 @@ func NewMetrics() *Metrics {
 	storageBytes.WithLabelValues("thumbnails").Set(0)
 	photosAnnotated.WithLabelValues("new")
 	photosAnnotated.WithLabelValues("backfill")
+	artworksAnnotated.Set(0)
 
 	return &Metrics{
 		registry:            reg,
@@ -128,6 +143,8 @@ func NewMetrics() *Metrics {
 		annotationDuration:  annotationDuration,
 		annotationErrors:    annotationErrors,
 		themesRecorded:      themesRecorded,
+		artworksAnnotated:   artworksAnnotated,
+		artisticMovements:   artisticMovements,
 	}
 }
 
@@ -249,6 +266,30 @@ func (m *Metrics) RecordTheme(theme string) {
 		return
 	}
 	m.themesRecorded.WithLabelValues(theme).Inc()
+}
+
+// SetArtworksAnnotated sets the count of serialized artwork proto files physically stored on disk.
+func (m *Metrics) SetArtworksAnnotated(count int) {
+	if m == nil || m.artworksAnnotated == nil {
+		return
+	}
+	m.artworksAnnotated.Set(float64(count))
+}
+
+// SetArtisticMovement sets the count of artworks recorded for a given artistic movement.
+func (m *Metrics) SetArtisticMovement(theme string, count int) {
+	if m == nil || m.artisticMovements == nil {
+		return
+	}
+	m.artisticMovements.WithLabelValues(theme).Set(float64(count))
+}
+
+// ResetArtisticMovements resets the artistic movements gauge vector.
+func (m *Metrics) ResetArtisticMovements() {
+	if m == nil || m.artisticMovements == nil {
+		return
+	}
+	m.artisticMovements.Reset()
 }
 
 // ScanStorage performs a single walk of images and thumbnails directories,
