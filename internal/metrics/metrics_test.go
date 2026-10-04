@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	gallerypb "github.com/brotherlogic/rose/proto"
 	dto "github.com/prometheus/client_model/go"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestMetrics_Registration(t *testing.T) {
@@ -698,4 +701,314 @@ func TestMetrics_Handler_CurationExposition(t *testing.T) {
 		}
 	}
 }
+
+func writeTestArtworkProto(t *testing.T, dir, filename string, artwork *gallerypb.Artwork) string {
+	t.Helper()
+	data, err := proto.Marshal(artwork)
+	if err != nil {
+		t.Fatalf("failed to marshal artwork proto: %v", err)
+	}
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write artwork proto file %s: %v", path, err)
+	}
+	return path
+}
+
+func getGatheredGaugeValue(t *testing.T, m *Metrics, name string) (float64, bool) {
+	t.Helper()
+	mfs, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == name {
+			if len(mf.GetMetric()) > 0 && mf.GetMetric()[0].GetGauge() != nil {
+				return mf.GetMetric()[0].GetGauge().GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func getGatheredCounterValue(t *testing.T, m *Metrics, name string) (float64, bool) {
+	t.Helper()
+	mfs, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == name {
+			if len(mf.GetMetric()) > 0 && mf.GetMetric()[0].GetCounter() != nil {
+				return mf.GetMetric()[0].GetCounter().GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func getGatheredArtisticMovements(t *testing.T, m *Metrics) map[string]float64 {
+	t.Helper()
+	mfs, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+	movements := make(map[string]float64)
+	for _, mf := range mfs {
+		if mf.GetName() == "rose_syncer_artistic_movements_total" {
+			for _, metric := range mf.GetMetric() {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() == "theme" {
+						movements[label.GetValue()] = metric.GetGauge().GetValue()
+					}
+				}
+			}
+		}
+	}
+	return movements
+}
+
+func TestMetrics_ScanStorage_ArtworksAndMovements(t *testing.T) {
+	tempDir := t.TempDir()
+	m := NewMetrics()
+
+	writeTestArtworkProto(t, tempDir, "art1.proto.bin", &gallerypb.Artwork{
+		Id:      "art1",
+		ThemeId: "Impressionism",
+	})
+	writeTestArtworkProto(t, tempDir, "art2.proto.bin", &gallerypb.Artwork{
+		Id:      "art2",
+		ThemeId: "Impressionism",
+	})
+	writeTestArtworkProto(t, tempDir, "art3.proto.bin", &gallerypb.Artwork{
+		Id:      "art3",
+		ThemeId: "Renaissance",
+	})
+
+	m.ScanStorage(tempDir)
+
+	val, found := getGatheredGaugeValue(t, m, "rose_syncer_artworks_annotated_total")
+	if !found || val != 3 {
+		t.Errorf("expected rose_syncer_artworks_annotated_total=3, found=%v val=%f", found, val)
+	}
+
+	movements := getGatheredArtisticMovements(t, m)
+	if movements["Impressionism"] != 2 {
+		t.Errorf("expected Impressionism=2, got %f", movements["Impressionism"])
+	}
+	if movements["Renaissance"] != 1 {
+		t.Errorf("expected Renaissance=1, got %f", movements["Renaissance"])
+	}
+}
+
+func TestMetrics_ScanStorage_EmptyAndWhitespaceThemes(t *testing.T) {
+	tempDir := t.TempDir()
+	m := NewMetrics()
+
+	writeTestArtworkProto(t, tempDir, "art-empty.proto.bin", &gallerypb.Artwork{
+		Id:      "art-empty",
+		ThemeId: "",
+	})
+	writeTestArtworkProto(t, tempDir, "art-whitespace.proto.bin", &gallerypb.Artwork{
+		Id:      "art-whitespace",
+		ThemeId: "   \t\n ",
+	})
+
+	m.ScanStorage(tempDir)
+
+	val, found := getGatheredGaugeValue(t, m, "rose_syncer_artworks_annotated_total")
+	if !found || val != 2 {
+		t.Errorf("expected rose_syncer_artworks_annotated_total=2, found=%v val=%f", found, val)
+	}
+
+	movements := getGatheredArtisticMovements(t, m)
+	if movements["Uncategorized"] != 2 {
+		t.Errorf("expected Uncategorized=2, got %f", movements["Uncategorized"])
+	}
+}
+
+func TestMetrics_ScanStorage_SpecialCharacterThemes(t *testing.T) {
+	tempDir := t.TempDir()
+	m := NewMetrics()
+
+	writeTestArtworkProto(t, tempDir, "art-brut.proto.bin", &gallerypb.Artwork{
+		Id:      "art-brut",
+		ThemeId: "L'art brut",
+	})
+	writeTestArtworkProto(t, tempDir, "art-avant.proto.bin", &gallerypb.Artwork{
+		Id:      "art-avant",
+		ThemeId: "Avant-Garde",
+	})
+
+	m.ScanStorage(tempDir)
+
+	val, found := getGatheredGaugeValue(t, m, "rose_syncer_artworks_annotated_total")
+	if !found || val != 2 {
+		t.Errorf("expected rose_syncer_artworks_annotated_total=2, found=%v val=%f", found, val)
+	}
+
+	movements := getGatheredArtisticMovements(t, m)
+	if movements["L'art brut"] != 1 {
+		t.Errorf("expected L'art brut=1, got %f", movements["L'art brut"])
+	}
+	if movements["Avant-Garde"] != 1 {
+		t.Errorf("expected Avant-Garde=1, got %f", movements["Avant-Garde"])
+	}
+
+	server := httptest.NewServer(m.Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatalf("failed to GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+	bodyStr := string(body)
+
+	expectedStrings := []string{
+		`rose_syncer_artistic_movements_total{theme="L'art brut"} 1`,
+		`rose_syncer_artistic_movements_total{theme="Avant-Garde"} 1`,
+	}
+	for _, expected := range expectedStrings {
+		if !strings.Contains(bodyStr, expected) {
+			t.Errorf("expected metrics exposition to contain %q, body:\n%s", expected, bodyStr)
+		}
+	}
+}
+
+func TestMetrics_ScanStorage_IgnoresTemporaryFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	m := NewMetrics()
+
+	writeTestArtworkProto(t, tempDir, "valid.proto.bin", &gallerypb.Artwork{
+		Id:      "valid",
+		ThemeId: "Pop Art",
+	})
+
+	// Temporary atomic files and dotfiles
+	atomicTmp := filepath.Join(tempDir, fmt.Sprintf(".%s.proto.bin.tmp-%d", "atomic", time.Now().UnixNano()))
+	if err := os.WriteFile(atomicTmp, []byte("temp atomic content"), 0644); err != nil {
+		t.Fatalf("failed to write atomic temp file: %v", err)
+	}
+
+	rawTmp := filepath.Join(tempDir, "image.tmp")
+	if err := os.WriteFile(rawTmp, []byte("temp content"), 0644); err != nil {
+		t.Fatalf("failed to write tmp file: %v", err)
+	}
+
+	dotProto := filepath.Join(tempDir, ".hidden.proto.bin")
+	if err := os.WriteFile(dotProto, []byte("dotfile content"), 0644); err != nil {
+		t.Fatalf("failed to write dot proto file: %v", err)
+	}
+
+	tmpSuffix := filepath.Join(tempDir, "photo.proto.bin.tmp-999")
+	if err := os.WriteFile(tmpSuffix, []byte("tmp suffix content"), 0644); err != nil {
+		t.Fatalf("failed to write tmp suffix file: %v", err)
+	}
+
+	m.ScanStorage(tempDir)
+
+	val, found := getGatheredGaugeValue(t, m, "rose_syncer_artworks_annotated_total")
+	if !found || val != 1 {
+		t.Errorf("expected rose_syncer_artworks_annotated_total=1, found=%v val=%f", found, val)
+	}
+
+	movements := getGatheredArtisticMovements(t, m)
+	if movements["Pop Art"] != 1 {
+		t.Errorf("expected Pop Art=1, got %f", movements["Pop Art"])
+	}
+	if len(movements) != 1 {
+		t.Errorf("expected exactly 1 movement, got %d", len(movements))
+	}
+
+	errCount, _ := getGatheredCounterValue(t, m, "rose_syncer_annotation_errors_total")
+	if errCount != 0 {
+		t.Errorf("expected rose_syncer_annotation_errors_total=0, got %f", errCount)
+	}
+}
+
+func TestMetrics_ScanStorage_CorruptProtoResilience(t *testing.T) {
+	tempDir := t.TempDir()
+	m := NewMetrics()
+
+	writeTestArtworkProto(t, tempDir, "valid.proto.bin", &gallerypb.Artwork{
+		Id:      "valid",
+		ThemeId: "Baroque",
+	})
+
+	corruptPath := filepath.Join(tempDir, "corrupt.proto.bin")
+	if err := os.WriteFile(corruptPath, []byte{0xff, 0xff, 0xff, 0xff, 0x00}, 0644); err != nil {
+		t.Fatalf("failed to write corrupt file: %v", err)
+	}
+
+	m.ScanStorage(tempDir)
+
+	val, found := getGatheredGaugeValue(t, m, "rose_syncer_artworks_annotated_total")
+	if !found || val != 1 {
+		t.Errorf("expected rose_syncer_artworks_annotated_total=1, found=%v val=%f", found, val)
+	}
+
+	movements := getGatheredArtisticMovements(t, m)
+	if movements["Baroque"] != 1 {
+		t.Errorf("expected Baroque=1, got %f", movements["Baroque"])
+	}
+
+	errCount, foundErr := getGatheredCounterValue(t, m, "rose_syncer_annotation_errors_total")
+	if !foundErr || errCount != 1 {
+		t.Errorf("expected rose_syncer_annotation_errors_total=1, found=%v val=%f", foundErr, errCount)
+	}
+}
+
+func TestMetrics_ScanStorage_GaugeReconciliationOnDeletion(t *testing.T) {
+	tempDir := t.TempDir()
+	m := NewMetrics()
+
+	file1 := writeTestArtworkProto(t, tempDir, "art1.proto.bin", &gallerypb.Artwork{
+		Id:      "art1",
+		ThemeId: "Impressionism",
+	})
+	file2 := writeTestArtworkProto(t, tempDir, "art2.proto.bin", &gallerypb.Artwork{
+		Id:      "art2",
+		ThemeId: "Renaissance",
+	})
+
+	m.ScanStorage(tempDir)
+
+	val, found := getGatheredGaugeValue(t, m, "rose_syncer_artworks_annotated_total")
+	if !found || val != 2 {
+		t.Errorf("expected rose_syncer_artworks_annotated_total=2, found=%v val=%f", found, val)
+	}
+
+	movements := getGatheredArtisticMovements(t, m)
+	if movements["Impressionism"] != 1 || movements["Renaissance"] != 1 {
+		t.Errorf("expected Impressionism=1, Renaissance=1, got %v", movements)
+	}
+
+	// Delete file2 and re-scan
+	_ = file1
+	if err := os.Remove(file2); err != nil {
+		t.Fatalf("failed to remove art2 file: %v", err)
+	}
+
+	m.ScanStorage(tempDir)
+
+	val, found = getGatheredGaugeValue(t, m, "rose_syncer_artworks_annotated_total")
+	if !found || val != 1 {
+		t.Errorf("expected rose_syncer_artworks_annotated_total=1 after deletion, found=%v val=%f", found, val)
+	}
+
+	movements = getGatheredArtisticMovements(t, m)
+	if movements["Impressionism"] != 1 {
+		t.Errorf("expected Impressionism=1, got %f", movements["Impressionism"])
+	}
+	if _, ok := movements["Renaissance"]; ok {
+		t.Errorf("expected Renaissance to be removed after deletion reconciliation, but still present in %v", movements)
+	}
+}
+
 
