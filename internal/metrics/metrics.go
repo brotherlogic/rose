@@ -1,13 +1,17 @@
 package metrics
 
 import (
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	gallerypb "github.com/brotherlogic/rose/proto"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"google.golang.org/protobuf/proto"
 )
 
 // Metrics encapsulates Prometheus collectors and a dedicated registry for rose-syncer.
@@ -293,7 +297,8 @@ func (m *Metrics) ResetArtisticMovements() {
 }
 
 // ScanStorage performs a single walk of images and thumbnails directories,
-// calculating both counts and total bytes, setting all respective gauges.
+// calculating both counts and total bytes, setting all respective gauges,
+// and scans serialized .proto.bin artwork files to aggregate artistic movements.
 func (m *Metrics) ScanStorage(basePath string) {
 	if m == nil {
 		return
@@ -311,6 +316,61 @@ func (m *Metrics) ScanStorage(basePath string) {
 	if m.storageBytes != nil {
 		m.storageBytes.WithLabelValues("images").Set(imagesBytes)
 		m.storageBytes.WithLabelValues("thumbnails").Set(thumbnailsBytes)
+	}
+
+	validArtworks := 0
+	themeCounts := make(map[string]int)
+
+	entries, err := os.ReadDir(basePath)
+	if err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if strings.HasPrefix(name, ".") || strings.Contains(name, ".tmp") || !strings.HasSuffix(name, ".proto.bin") {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+
+			data, err := os.ReadFile(filepath.Join(basePath, name))
+			if err != nil {
+				log.Printf("warning: failed to read artwork proto %s: %v", name, err)
+				if m.annotationErrors != nil {
+					m.annotationErrors.Inc()
+				}
+				continue
+			}
+
+			var artwork gallerypb.Artwork
+			if err := proto.Unmarshal(data, &artwork); err != nil {
+				log.Printf("warning: failed to unmarshal artwork proto %s: %v", name, err)
+				if m.annotationErrors != nil {
+					m.annotationErrors.Inc()
+				}
+				continue
+			}
+
+			validArtworks++
+			theme := strings.TrimSpace(artwork.GetThemeId())
+			if theme == "" {
+				theme = "Uncategorized"
+			}
+			themeCounts[theme]++
+		}
+	}
+
+	if m.artisticMovements != nil {
+		m.artisticMovements.Reset()
+		for theme, count := range themeCounts {
+			m.artisticMovements.WithLabelValues(theme).Set(float64(count))
+		}
+	}
+	if m.artworksAnnotated != nil {
+		m.artworksAnnotated.Set(float64(validArtworks))
 	}
 }
 
