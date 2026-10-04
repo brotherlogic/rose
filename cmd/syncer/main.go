@@ -266,9 +266,6 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 
 	fetchedCount := len(photosList)
 	log.Printf("Fetched %d photo(s) to process", fetchedCount)
-	if fetchedCount == 0 {
-		return 0
-	}
 
 	var attemptedCount, successCount, errorCount, newAnnotationsCount int
 	for _, photo := range photosList {
@@ -582,6 +579,150 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		})
 		return 1
 	}
+
+	// Phase 2: Chronological Backfill Engine
+	seenPhotos := make(map[string]bool, len(photosList))
+	for _, p := range photosList {
+		seenPhotos[p.ID] = true
+	}
+
+	var backfillAnnotationsCount int
+	remainingQuota := maxQuota - newAnnotationsCount
+	if store != nil && (maxQuota <= 0 || remainingQuota > 0) {
+		candidates, err := store.FindUnannotatedPhotos()
+		if err != nil {
+			m.IncSyncErrors()
+			log.Printf("Error finding unannotated photos: %v", err)
+			reportFailure(reporter, github.FailureReport{
+				Stage:            "Backfill Candidate Discovery",
+				Timestamp:        time.Now().UTC(),
+				Error:            err,
+				PhotosFetched:    fetchedCount,
+				PhotosAttempted:  attemptedCount,
+				PhotosSuccessful: successCount,
+				LogSummary:       fmt.Sprintf("error finding unannotated photos: %v", err),
+			})
+			return 1
+		}
+
+		for _, candidate := range candidates {
+			if seenPhotos[candidate.ID] {
+				continue
+			}
+
+			if maxQuota > 0 && remainingQuota <= 0 {
+				break
+			}
+
+			if ctx.Err() != nil {
+				m.IncSyncErrors()
+				log.Printf("Context cancelled during backfill: %v", ctx.Err())
+				reportFailure(reporter, github.FailureReport{
+					Stage:            "Context Cancelled",
+					Timestamp:        time.Now().UTC(),
+					Error:            ctx.Err(),
+					PhotosFetched:    fetchedCount,
+					PhotosAttempted:  attemptedCount,
+					PhotosSuccessful: successCount,
+					LogSummary:       fmt.Sprintf("context cancelled during backfill: %v", ctx.Err()),
+				})
+				return 1
+			}
+
+			imgBytes, err := store.ReadImage(candidate.ID)
+			if err != nil {
+				m.IncSyncErrors()
+				log.Printf("Error reading image for backfill photo %s: %v, skipping without consuming quota", candidate.ID, err)
+				continue
+			}
+
+			if !store.HasThumbnail(candidate.ID) {
+				thumbBytes, err := thumbnail.GenerateThumbnail(imgBytes)
+				if err != nil {
+					log.Printf("Error generating thumbnail for backfill photo %s: %v, skipping without consuming quota", candidate.ID, err)
+					continue
+				}
+
+				if err := store.WriteThumbnail(candidate.ID, thumbBytes); err != nil {
+					m.IncSyncErrors()
+					log.Printf("Error writing thumbnail for backfill photo %s: %v, aborting immediately", candidate.ID, err)
+					reportFailure(reporter, github.FailureReport{
+						Stage:            "Storage Persistence",
+						Timestamp:        time.Now().UTC(),
+						Error:            err,
+						PhotosFetched:    fetchedCount,
+						PhotosAttempted:  attemptedCount,
+						PhotosSuccessful: successCount,
+						LogSummary:       fmt.Sprintf("error writing thumbnail for backfill photo %s: %v", candidate.ID, err),
+					})
+					return 1
+				}
+
+				m.IncThumbnailsGenerated()
+				m.IncStoredThumbnails()
+				m.UpdateStorageBytes(storagePath)
+			}
+
+			analysisStart := time.Now()
+			res, err := visionSvc.Analyze(ctx, imgBytes)
+			if err != nil {
+				if isRateLimitError(err) {
+					log.Printf("Rate limit encountered during backfill vision analysis for %s: %v, exiting gracefully", candidate.ID, err)
+					return 0
+				}
+				m.IncAnnotationErrors()
+				m.IncSyncErrors()
+				log.Printf("Error analyzing backfill image %s: %v", candidate.ID, err)
+				errorCount++
+				continue
+			}
+
+			m.ObserveAnnotationDuration(time.Since(analysisStart))
+			m.IncPhotosAnnotated("backfill")
+			if res != nil && res.Theme != "" {
+				m.RecordTheme(res.Theme)
+			}
+
+			timestamp := candidate.Timestamp
+			if timestamp <= 0 {
+				timestamp = time.Now().Unix()
+			}
+			artwork := buildArtwork(candidate.ID, res, timestamp, store)
+
+			protoData, err := proto.Marshal(artwork)
+			if err != nil {
+				m.IncSyncErrors()
+				log.Printf("Error marshaling proto for backfill %s: %v", candidate.ID, err)
+				errorCount++
+				continue
+			}
+
+			if err := store.WriteArtworkProtoAtomic(candidate.ID, protoData); err != nil {
+				m.IncSyncErrors()
+				log.Printf("Error writing artwork proto for backfill %s: %v, aborting immediately", candidate.ID, err)
+				reportFailure(reporter, github.FailureReport{
+					Stage:            "Storage Persistence",
+					Timestamp:        time.Now().UTC(),
+					Error:            err,
+					PhotosFetched:    fetchedCount,
+					PhotosAttempted:  attemptedCount,
+					PhotosSuccessful: successCount,
+					LogSummary:       fmt.Sprintf("error writing artwork proto for backfill %s: %v", candidate.ID, err),
+				})
+				return 1
+			}
+
+			if err := store.SaveProcessedPhoto(candidate.ID); err != nil {
+				m.IncSyncErrors()
+				log.Printf("Error saving processed state for backfill %s: %v", candidate.ID, err)
+			}
+
+			remainingQuota--
+			backfillAnnotationsCount++
+			log.Printf("Successfully backfilled annotations for photo %s", candidate.ID)
+		}
+	}
+	log.Printf("Backfill phase completed: %d photo(s) annotated", backfillAnnotationsCount)
 
 	if errorCount > 0 {
 		log.Printf("Syncer completed with %d error(s)", errorCount)
