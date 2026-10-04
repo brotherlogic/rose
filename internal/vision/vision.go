@@ -157,8 +157,8 @@ type chatImageURL struct {
 }
 
 type chatMessage struct {
-	Role    string                   `json:"role"`
-	Content []chatMessageContentPart `json:"content"`
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"`
 }
 
 type chatCompletionRequest struct {
@@ -173,22 +173,6 @@ type chatCompletionResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
-}
-
-func cleanJSONResponse(content string) string {
-	trimmed := strings.TrimSpace(content)
-	if strings.HasPrefix(trimmed, "```") {
-		trimmed = strings.TrimPrefix(trimmed, "```")
-		if strings.HasPrefix(trimmed, "json\n") || strings.HasPrefix(trimmed, "json\r\n") {
-			trimmed = strings.TrimPrefix(trimmed, "json")
-		} else if idx := strings.Index(trimmed, "\n"); idx != -1 && !strings.Contains(trimmed[:idx], "{") {
-			trimmed = trimmed[idx+1:]
-		}
-		if idx := strings.LastIndex(trimmed, "```"); idx != -1 {
-			trimmed = trimmed[:idx]
-		}
-	}
-	return strings.TrimSpace(trimmed)
 }
 
 // Analyze performs multimodal vision analysis on the provided image payload with exponential backoff retries.
@@ -208,17 +192,19 @@ func (s *Service) Analyze(ctx context.Context, img []byte) (*AnalysisResult, err
 
 	dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(img))
 
-	textPrompt := "Analyze the artwork image. Provide a valid JSON response with keys: 'title', 'medium', 'description', and 'theme'."
-
 	reqPayload := chatCompletionRequest{
 		Model: s.cfg.Model,
 		Messages: []chatMessage{
+			{
+				Role:    "system",
+				Content: CuratorialSystemPrompt,
+			},
 			{
 				Role: "user",
 				Content: []chatMessageContentPart{
 					{
 						Type: "text",
-						Text: textPrompt,
+						Text: "Curate and critique this artwork for exhibition cataloging. Respond in strict JSON.",
 					},
 					{
 						Type: "image_url",
@@ -325,27 +311,17 @@ func (s *Service) Analyze(ctx context.Context, img []byte) (*AnalysisResult, err
 			return nil, errors.New("no completion choices returned by model")
 		}
 
-		cleanedContent := cleanJSONResponse(chatResp.Choices[0].Message.Content)
-
-		var result AnalysisResult
-		if err := json.Unmarshal([]byte(cleanedContent), &result); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal analysis result json: %w", err)
+		rawContent := chatResp.Choices[0].Message.Content
+		res, err := ParseAndValidateAnalysisResult(rawContent)
+		if err != nil {
+			return nil, err
 		}
 
-		if strings.TrimSpace(result.Title) == "" {
-			return nil, errors.New("analysis result missing required field: title")
-		}
-		if strings.TrimSpace(result.Medium) == "" {
-			return nil, errors.New("analysis result missing required field: medium")
-		}
-		if strings.TrimSpace(result.Description) == "" {
-			return nil, errors.New("analysis result missing required field: description")
-		}
-		if strings.TrimSpace(result.Theme) == "" {
-			return nil, errors.New("analysis result missing required field: theme")
+		if err := ValidateCuratorialRules(res); err != nil {
+			return nil, err
 		}
 
-		return &result, nil
+		return res, nil
 	}
 
 	return nil, fmt.Errorf("vision inference retries exhausted: %w", lastErr)

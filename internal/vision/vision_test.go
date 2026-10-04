@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const validTestCuratorialDesc = "This monumental composition embodies the austere dialectic of space and mark-making in contemporary practice. The gestural urgency establishes an unrelenting rhythm that interrogates the viewer's phenomenological expectations across the entire picture plane. Each intentional intervention transforms the everyday substrate into an arena of profound metaphysical inquiry and rigorous aesthetic contemplation."
+
 func TestAnalyzeImage_BackwardCompatibility(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -20,7 +22,7 @@ func TestAnalyzeImage_BackwardCompatibility(t *testing.T) {
 			"choices": [
 				{
 					"message": {
-						"content": "{\"title\": \"Mona Lisa\", \"medium\": \"Oil on Poplar\", \"description\": \"Portrait with enigmatic expression\", \"theme\": \"Renaissance\"}"
+						"content": "{\"title\": \"Mona Lisa\", \"medium\": \"Oil on Poplar\", \"description\": \"` + validTestCuratorialDesc + `\", \"theme\": \"The Crayon Period\"}"
 					}
 				}
 			]
@@ -37,11 +39,11 @@ func TestAnalyzeImage_BackwardCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error from AnalyzeImage wrapper, got: %v", err)
 	}
-	if desc != "Portrait with enigmatic expression" {
-		t.Errorf("expected description 'Portrait with enigmatic expression', got %q", desc)
+	if desc != validTestCuratorialDesc {
+		t.Errorf("expected description %q, got %q", validTestCuratorialDesc, desc)
 	}
-	if theme != "Renaissance" {
-		t.Errorf("expected theme 'Renaissance', got %q", theme)
+	if theme != "The Crayon Period" {
+		t.Errorf("expected theme 'The Crayon Period', got %q", theme)
 	}
 }
 
@@ -217,7 +219,7 @@ func TestAnalyze_Success(t *testing.T) {
 			"choices": [
 				{
 					"message": {
-						"content": "{\"title\": \"Starry Night\", \"medium\": \"Oil on Canvas\", \"description\": \"A swirling night sky over a quiet town.\", \"theme\": \"Post-Impressionism\"}"
+						"content": "{\"title\": \"Starry Night\", \"medium\": \"Oil on Canvas\", \"description\": \"` + validTestCuratorialDesc + `\", \"theme\": \"The Crayon Period\"}"
 					}
 				}
 			]
@@ -247,11 +249,11 @@ func TestAnalyze_Success(t *testing.T) {
 	if res.Medium != "Oil on Canvas" {
 		t.Errorf("expected medium 'Oil on Canvas', got %q", res.Medium)
 	}
-	if res.Description != "A swirling night sky over a quiet town." {
-		t.Errorf("expected description 'A swirling night sky over a quiet town.', got %q", res.Description)
+	if res.Description != validTestCuratorialDesc {
+		t.Errorf("expected description %q, got %q", validTestCuratorialDesc, res.Description)
 	}
-	if res.Theme != "Post-Impressionism" {
-		t.Errorf("expected theme 'Post-Impressionism', got %q", res.Theme)
+	if res.Theme != "The Crayon Period" {
+		t.Errorf("expected theme 'The Crayon Period', got %q", res.Theme)
 	}
 
 	// Verify request headers
@@ -274,22 +276,34 @@ func TestAnalyze_Success(t *testing.T) {
 	}
 
 	messages, ok := requestBody["messages"].([]interface{})
-	if !ok || len(messages) != 1 {
-		t.Fatalf("expected 1 user message, got %v", requestBody["messages"])
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected 2 messages (system and user), got %v", requestBody["messages"])
 	}
-	msgMap, ok := messages[0].(map[string]interface{})
-	if !ok || msgMap["role"] != "user" {
-		t.Fatalf("expected user role, got %v", messages[0])
+
+	// System message assertions
+	sysMsg, ok := messages[0].(map[string]interface{})
+	if !ok || sysMsg["role"] != "system" {
+		t.Fatalf("expected first message role system, got %v", messages[0])
 	}
-	contents, ok := msgMap["content"].([]interface{})
+	if sysMsg["content"] != CuratorialSystemPrompt {
+		t.Errorf("expected system message content to equal CuratorialSystemPrompt, got %v", sysMsg["content"])
+	}
+
+	// User message assertions
+	userMsg, ok := messages[1].(map[string]interface{})
+	if !ok || userMsg["role"] != "user" {
+		t.Fatalf("expected second message role user, got %v", messages[1])
+	}
+	contents, ok := userMsg["content"].([]interface{})
 	if !ok || len(contents) < 2 {
-		t.Fatalf("expected at least 2 content parts, got %v", msgMap["content"])
+		t.Fatalf("expected at least 2 content parts, got %v", userMsg["content"])
 	}
 
 	// Check text part
 	part0 := contents[0].(map[string]interface{})
-	if part0["type"] != "text" || !strings.Contains(part0["text"].(string), "title") {
-		t.Errorf("expected text prompt mentioning title, got %v", part0)
+	expectedPrompt := "Curate and critique this artwork for exhibition cataloging. Respond in strict JSON."
+	if part0["type"] != "text" || part0["text"] != expectedPrompt {
+		t.Errorf("expected text prompt %q, got %v", expectedPrompt, part0)
 	}
 
 	// Check image part
@@ -312,7 +326,7 @@ func TestAnalyze_MarkdownCodeFence(t *testing.T) {
 			"choices": [
 				{
 					"message": {
-						"content": "\n` + "```json" + `\n{\n  \"title\": \"Water Lilies\",\n  \"medium\": \"Oil on Canvas\",\n  \"description\": \"Monet's water garden at Giverny.\",\n  \"theme\": \"Impressionism\"\n}\n` + "```" + `\n"
+						"content": "\n` + "```json" + `\n{\n  \"title\": \"Water Lilies\",\n  \"medium\": \"Oil on Canvas\",\n  \"description\": \"` + validTestCuratorialDesc + `\",\n  \"theme\": \"The Crayon Period\"\n}\n` + "```" + `\n"
 					}
 				}
 			]
@@ -332,7 +346,64 @@ func TestAnalyze_MarkdownCodeFence(t *testing.T) {
 	if res == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if res.Title != "Water Lilies" || res.Medium != "Oil on Canvas" || res.Description != "Monet's water garden at Giverny." || res.Theme != "Impressionism" {
+	if res.Title != "Water Lilies" || res.Medium != "Oil on Canvas" || res.Description != validTestCuratorialDesc || res.Theme != "The Crayon Period" {
+		t.Errorf("unexpected parsed result: %+v", res)
+	}
+}
+
+func TestAnalyze_CuratorialRuleValidationFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"choices": [
+				{
+					"message": {
+						"content": "{\"title\": \"Cute Drawing\", \"medium\": \"Wax on paper\", \"description\": \"This is a cute drawing made by a little child who loved making a mess with colors on the kitchen floor.\", \"theme\": \"The Crayon Period\"}"
+					}
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	svc := NewService(
+		WithEndpoint(server.URL),
+		WithHTTPClient(server.Client()),
+	)
+
+	_, err := svc.Analyze(context.Background(), []byte("image-data"))
+	if err == nil {
+		t.Fatal("expected error when curatorial rules are violated, got nil")
+	}
+}
+
+func TestAnalyze_ResilientParsingWithExtraneousText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"choices": [
+				{
+					"message": {
+						"content": "Here is the exhibition analysis:\n` + "```json" + `\n{\n  \"title\": \"Chromatic Void\",\n  \"medium\": \"Wax pigment on reclaimed cellulose matrix\",\n  \"description\": \"` + validTestCuratorialDesc + `\",\n  \"theme\": \"Monochrome Nihilism\",\n}\n` + "```" + `\nI hope this critique meets the catalog standards."
+					}
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	svc := NewService(
+		WithEndpoint(server.URL),
+		WithHTTPClient(server.Client()),
+	)
+
+	res, err := svc.Analyze(context.Background(), []byte("image-data"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Title != "Chromatic Void" || res.Theme != "Monochrome Nihilism" {
 		t.Errorf("unexpected parsed result: %+v", res)
 	}
 }
@@ -407,7 +478,7 @@ func TestAnalyze_TransientRetryRecovery(t *testing.T) {
 			"choices": [
 				{
 					"message": {
-						"content": "{\"title\": \"Sunflower\", \"medium\": \"Oil\", \"description\": \"Bright flowers\", \"theme\": \"Nature\"}"
+						"content": "{\"title\": \"Sunflower\", \"medium\": \"Oil\", \"description\": \"` + validTestCuratorialDesc + `\", \"theme\": \"The Crayon Period\"}"
 					}
 				}
 			]
@@ -429,7 +500,7 @@ func TestAnalyze_TransientRetryRecovery(t *testing.T) {
 	if attempts != 3 {
 		t.Errorf("expected 3 server attempts, got %d", attempts)
 	}
-	if res.Title != "Sunflower" || res.Theme != "Nature" {
+	if res.Title != "Sunflower" || res.Theme != "The Crayon Period" {
 		t.Errorf("unexpected result: %+v", res)
 	}
 }
