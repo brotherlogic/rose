@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	gallerypb "github.com/brotherlogic/rose/proto"
 	"google.golang.org/protobuf/proto"
@@ -41,6 +42,9 @@ func (s *Store) loadSyncState() (map[string]bool, error) {
 }
 
 func (s *Store) saveSyncState(state map[string]bool) error {
+	if s == nil {
+		return fmt.Errorf("nil store")
+	}
 	if err := os.MkdirAll(s.BasePath, 0755); err != nil {
 		return err
 	}
@@ -48,7 +52,38 @@ func (s *Store) saveSyncState(state map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.syncStatePath(), data, 0644)
+
+	tmpPath := filepath.Join(s.BasePath, fmt.Sprintf(".sync-state.json.tmp-%d", time.Now().UnixNano()))
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return err
+	}
+
+	cleanUp := true
+	defer func() {
+		if cleanUp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpPath, s.syncStatePath()); err != nil {
+		return err
+	}
+
+	cleanUp = false
+	return nil
 }
 
 func (s *Store) IsPhotoProcessed(id string) (bool, error) {
@@ -74,6 +109,51 @@ func (s *Store) WriteArtworkProto(id string, data []byte) error {
 	}
 	filePath := filepath.Join(s.BasePath, id+".proto.bin")
 	return os.WriteFile(filePath, data, 0644)
+}
+
+func (s *Store) WriteArtworkProtoAtomic(id string, data []byte) error {
+	if s == nil {
+		return fmt.Errorf("nil store")
+	}
+	if err := validateID(id); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.BasePath, 0755); err != nil {
+		return err
+	}
+
+	tmpPath := filepath.Join(s.BasePath, fmt.Sprintf(".%s.proto.bin.tmp-%d", id, time.Now().UnixNano()))
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return err
+	}
+
+	cleanUp := true
+	defer func() {
+		if cleanUp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	destPath := filepath.Join(s.BasePath, id+".proto.bin")
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return err
+	}
+
+	cleanUp = false
+	return nil
 }
 
 func validateID(id string) error {
