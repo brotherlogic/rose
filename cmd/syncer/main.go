@@ -34,15 +34,16 @@ type PhotoService interface {
 
 // VisionService defines the interface for analyzing photo content.
 type VisionService interface {
-	AnalyzeImage(ctx context.Context, img []byte) (string, string, error)
+	Analyze(ctx context.Context, img []byte) (*vision.AnalysisResult, error)
 }
 
 // Config holds the configuration for syncer CLI execution.
 type Config struct {
-	AlbumURL    string
-	StoragePath string
-	GitHubToken string
-	MetricsPort int
+	AlbumURL             string
+	StoragePath          string
+	GitHubToken          string
+	MetricsPort          int
+	MaxAnnotationsPerRun int
 }
 
 // parseConfig parses CLI flags and environment variables.
@@ -63,11 +64,21 @@ func parseConfig(args []string) (*Config, error) {
 		defaultMetricsPort = p
 	}
 
+	defaultMaxAnnotations := 5
+	if envMax := os.Getenv("MAX_ANNOTATIONS_PER_RUN"); envMax != "" {
+		p, err := strconv.Atoi(envMax)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MAX_ANNOTATIONS_PER_RUN: %w", err)
+		}
+		defaultMaxAnnotations = p
+	}
+
 	fs := flag.NewFlagSet("syncer", flag.ContinueOnError)
 	albumURL := fs.String("album-url", defaultAlbum, "Google Photos public shared album URL")
 	storagePath := fs.String("storage-path", defaultStorage, "Path to storage directory")
 	githubToken := fs.String("github-token", defaultToken, "GitHub access token for failure reporting")
 	metricsPort := fs.Int("metrics-port", defaultMetricsPort, "Port for Prometheus metrics HTTP server")
+	maxAnnotations := fs.Int("max-annotations-per-run", defaultMaxAnnotations, "Maximum vision annotations per run (<= 0 disables throttling)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -83,10 +94,11 @@ func parseConfig(args []string) (*Config, error) {
 	}
 
 	return &Config{
-		AlbumURL:    trimmedAlbum,
-		StoragePath: *storagePath,
-		GitHubToken: strings.TrimSpace(*githubToken),
-		MetricsPort: *metricsPort,
+		AlbumURL:             trimmedAlbum,
+		StoragePath:          *storagePath,
+		GitHubToken:          strings.TrimSpace(*githubToken),
+		MetricsPort:          *metricsPort,
+		MaxAnnotationsPerRun: *maxAnnotations,
 	}, nil
 }
 
@@ -130,27 +142,45 @@ func reportFailure(reporter github.IssueReporter, report github.FailureReport) {
 
 // buildArtwork creates a gallery.Artwork proto instance, checking if a thumbnail exists in storage
 // and populating ThumbnailPath if found, or falling back to empty string if absent or store is nil.
-func buildArtwork(photoID, description, theme string, store *storage.Store) *gallery.Artwork {
+func buildArtwork(photoID string, res *vision.AnalysisResult, timestamp int64, store *storage.Store) *gallery.Artwork {
 	thumbnailPath := ""
 	if store != nil && store.HasThumbnail(photoID) {
 		thumbnailPath = "thumbnails/" + photoID + ".webp"
 	}
 
+	var title, medium, description, themeID string
+	if res != nil {
+		title = res.Title
+		medium = res.Medium
+		description = res.Description
+		themeID = res.Theme
+	}
+
 	return &gallery.Artwork{
 		Id:            photoID,
-		Title:         description,
+		Title:         title,
+		Medium:        medium,
 		Description:   description,
-		ThemeId:       theme,
-		Timestamp:     time.Now().Unix(),
+		ThemeId:       themeID,
+		Timestamp:     timestamp,
 		ImagePath:     "images/" + photoID + ".jpg",
 		ThumbnailPath: thumbnailPath,
 	}
 }
 
 // Run executes a single synchronization pass over photos from the shared album.
-func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoService, visionSvc VisionService, store *storage.Store, reporter github.IssueReporter, m *metrics.Metrics) int {
+func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoService, visionSvc VisionService, store *storage.Store, reporter github.IssueReporter, m *metrics.Metrics, maxAnnotationsPerRun ...int) int {
 	if m == nil {
 		m = metrics.NewMetrics()
+	}
+
+	maxQuota := 0
+	if len(maxAnnotationsPerRun) > 0 {
+		maxQuota = maxAnnotationsPerRun[0]
+	} else if envMax := os.Getenv("MAX_ANNOTATIONS_PER_RUN"); envMax != "" {
+		if p, err := strconv.Atoi(envMax); err == nil {
+			maxQuota = p
+		}
 	}
 
 	startTime := time.Now()
@@ -240,7 +270,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		return 0
 	}
 
-	var attemptedCount, successCount, errorCount int
+	var attemptedCount, successCount, errorCount, newAnnotationsCount int
 	for _, photo := range photosList {
 		if ctx.Err() != nil {
 			m.IncSyncErrors()
@@ -450,29 +480,50 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		m.IncStoredThumbnails()
 		m.UpdateStorageBytes(storagePath)
 
-		// Pass raw image bytes to vision service
-		desc, theme, err := visionSvc.AnalyzeImage(ctx, imgBytes)
-		if err != nil {
-			m.IncSyncErrors()
-			if isRateLimitError(err) {
-				log.Printf("Rate limit encountered during vision analysis for %s: %v, aborting", photo.ID, err)
+		// Check quota limit: if maxAnnotationsPerRun > 0 && newAnnotationsCount >= maxAnnotationsPerRun,
+		// defer further vision analysis on remaining newly discovered photos (proceed with download and thumbnailing).
+		if maxQuota > 0 && newAnnotationsCount >= maxQuota {
+			log.Printf("Quota limit reached (%d annotations), deferring vision analysis for photo %s", maxQuota, photo.ID)
+			if err := store.SaveProcessedPhoto(photo.ID); err != nil {
+				m.IncSyncErrors()
+				log.Printf("Error saving processed state for %s: %v, aborting immediately", photo.ID, err)
 				reportFailure(reporter, github.FailureReport{
-					Stage:            "Photo Processing - Rate Limited",
+					Stage:            "Storage Persistence",
 					Timestamp:        time.Now().UTC(),
 					Error:            err,
 					PhotosFetched:    fetchedCount,
 					PhotosAttempted:  attemptedCount,
 					PhotosSuccessful: successCount,
-					LogSummary:       fmt.Sprintf("rate limit encountered during vision analysis for %s: %v", photo.ID, err),
+					LogSummary:       fmt.Sprintf("error saving processed state for %s: %v", photo.ID, err),
 				})
 				return 1
 			}
+			successCount++
+			continue
+		}
+
+		// Pass raw image bytes to vision service measuring duration
+		analysisStart := time.Now()
+		res, err := visionSvc.Analyze(ctx, imgBytes)
+		if err != nil {
+			if isRateLimitError(err) {
+				log.Printf("Rate limit encountered during vision analysis for %s: %v, exiting gracefully", photo.ID, err)
+				return 0
+			}
+			m.IncAnnotationErrors()
+			m.IncSyncErrors()
 			log.Printf("Error analyzing image %s: %v", photo.ID, err)
 			errorCount++
 			continue
 		}
 
-		artwork := buildArtwork(photo.ID, desc, theme, store)
+		m.ObserveAnnotationDuration(time.Since(analysisStart))
+		m.IncPhotosAnnotated("new")
+		if res != nil && res.Theme != "" {
+			m.RecordTheme(res.Theme)
+		}
+
+		artwork := buildArtwork(photo.ID, res, time.Now().Unix(), store)
 
 		protoData, err := proto.Marshal(artwork)
 		if err != nil {
@@ -482,7 +533,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			continue
 		}
 
-		if err := store.WriteArtworkProto(photo.ID, protoData); err != nil {
+		if err := store.WriteArtworkProtoAtomic(photo.ID, protoData); err != nil {
 			m.IncSyncErrors()
 			log.Printf("Error writing artwork proto for %s: %v, aborting immediately", photo.ID, err)
 			reportFailure(reporter, github.FailureReport{
@@ -496,6 +547,8 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			})
 			return 1
 		}
+
+		newAnnotationsCount++
 
 		if err := store.SaveProcessedPhoto(photo.ID); err != nil {
 			m.IncSyncErrors()
@@ -607,7 +660,7 @@ func main() {
 		reporter = github.NewClient(cfg.GitHubToken)
 	}
 
-	exitCode := Run(ctx, cfg.AlbumURL, cfg.StoragePath, photoSvc, visionSvc, store, reporter, m)
+	exitCode := Run(ctx, cfg.AlbumURL, cfg.StoragePath, photoSvc, visionSvc, store, reporter, m, cfg.MaxAnnotationsPerRun)
 
 	runGracePeriod(ctx, 60*time.Second)
 

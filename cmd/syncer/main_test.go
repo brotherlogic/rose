@@ -24,6 +24,7 @@ import (
 	"github.com/brotherlogic/rose/internal/photos"
 	"github.com/brotherlogic/rose/internal/storage"
 	"github.com/brotherlogic/rose/internal/thumbnail"
+	"github.com/brotherlogic/rose/internal/vision"
 	gallery "github.com/brotherlogic/rose/proto"
 	dto "github.com/prometheus/client_model/go"
 	"google.golang.org/protobuf/proto"
@@ -66,18 +67,44 @@ func (m *mockPhotoService) DownloadImage(ctx context.Context, downloadURL string
 }
 
 type mockVisionService struct {
-	analyzeFunc func(ctx context.Context, img []byte) (string, string, error)
-	callCount   int
-	receivedImg [][]byte
+	analyzeFunc       func(ctx context.Context, img []byte) (string, string, error)
+	analyzeResultFunc func(ctx context.Context, img []byte) (*vision.AnalysisResult, error)
+	callCount         int
+	receivedImg       [][]byte
+}
+
+func (m *mockVisionService) Analyze(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+	m.callCount++
+	m.receivedImg = append(m.receivedImg, img)
+	if m.analyzeResultFunc != nil {
+		return m.analyzeResultFunc(ctx, img)
+	}
+	if m.analyzeFunc != nil {
+		desc, theme, err := m.analyzeFunc(ctx, img)
+		if err != nil {
+			return nil, err
+		}
+		return &vision.AnalysisResult{
+			Title:       desc,
+			Medium:      "Oil on Canvas",
+			Description: desc,
+			Theme:       theme,
+		}, nil
+	}
+	return &vision.AnalysisResult{
+		Title:       "A beautiful sunset",
+		Medium:      "Oil on Canvas",
+		Description: "A beautiful sunset",
+		Theme:       "Landscape",
+	}, nil
 }
 
 func (m *mockVisionService) AnalyzeImage(ctx context.Context, img []byte) (string, string, error) {
-	m.callCount++
-	m.receivedImg = append(m.receivedImg, img)
-	if m.analyzeFunc != nil {
-		return m.analyzeFunc(ctx, img)
+	res, err := m.Analyze(ctx, img)
+	if err != nil {
+		return "", "", err
 	}
-	return "A beautiful sunset", "Landscape", nil
+	return res.Description, res.Theme, nil
 }
 
 type mockIssueReporter struct {
@@ -1427,14 +1454,16 @@ func TestRun_ThumbnailPath_Fallback(t *testing.T) {
 	store := storage.NewStore(tempDir)
 
 	t.Run("NilStoreFallback", func(t *testing.T) {
-		artwork := buildArtwork("photo-nil-store", "A description", "A theme", nil)
+		res := &vision.AnalysisResult{Description: "A description", Theme: "A theme"}
+		artwork := buildArtwork("photo-nil-store", res, 1234567890, nil)
 		if artwork.GetThumbnailPath() != "" {
 			t.Errorf("expected empty ThumbnailPath when store is nil, got %q", artwork.GetThumbnailPath())
 		}
 	})
 
 	t.Run("MissingThumbnailFileFallback", func(t *testing.T) {
-		artwork := buildArtwork("missing-thumb-photo", "A description", "A theme", store)
+		res := &vision.AnalysisResult{Description: "A description", Theme: "A theme"}
+		artwork := buildArtwork("missing-thumb-photo", res, 1234567890, store)
 		if artwork.GetThumbnailPath() != "" {
 			t.Errorf("expected empty ThumbnailPath when thumbnail file does not exist, got %q", artwork.GetThumbnailPath())
 		}
@@ -1445,7 +1474,8 @@ func TestRun_ThumbnailPath_Fallback(t *testing.T) {
 		if err := os.MkdirAll(dirPath, 0755); err != nil {
 			t.Fatalf("failed to create dir: %v", err)
 		}
-		artwork := buildArtwork("dir-photo", "A description", "A theme", store)
+		res := &vision.AnalysisResult{Description: "A description", Theme: "A theme"}
+		artwork := buildArtwork("dir-photo", res, 1234567890, store)
 		if artwork.GetThumbnailPath() != "" {
 			t.Errorf("expected empty ThumbnailPath when target is a directory, got %q", artwork.GetThumbnailPath())
 		}
@@ -1461,7 +1491,8 @@ func TestRun_ThumbnailPath_Fallback(t *testing.T) {
 			t.Fatalf("failed to create fake thumbnail: %v", err)
 		}
 
-		artwork := buildArtwork("existing-photo", "A description", "A theme", store)
+		res := &vision.AnalysisResult{Description: "A description", Theme: "A theme"}
+		artwork := buildArtwork("existing-photo", res, 1234567890, store)
 		if artwork.GetThumbnailPath() != "thumbnails/existing-photo.webp" {
 			t.Errorf("expected 'thumbnails/existing-photo.webp', got %q", artwork.GetThumbnailPath())
 		}
@@ -2082,6 +2113,267 @@ func TestBackfillMissingThumbnails_WriteThumbnailFailureAborts(t *testing.T) {
 		t.Errorf("expected 1 failure report, got %d", reporter.createCalls.Load())
 	}
 }
+
+func TestParseConfig_MaxAnnotations(t *testing.T) {
+	// default value 5
+	cfg, err := parseConfig([]string{"-album-url", "https://photos.app.goo.gl/test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MaxAnnotationsPerRun != 5 {
+		t.Errorf("expected default MaxAnnotationsPerRun 5, got %d", cfg.MaxAnnotationsPerRun)
+	}
+
+	// cli flag override
+	cfg, err = parseConfig([]string{"-album-url", "https://photos.app.goo.gl/test", "--max-annotations-per-run", "10"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MaxAnnotationsPerRun != 10 {
+		t.Errorf("expected MaxAnnotationsPerRun 10, got %d", cfg.MaxAnnotationsPerRun)
+	}
+
+	// env var override
+	t.Setenv("MAX_ANNOTATIONS_PER_RUN", "7")
+	cfg, err = parseConfig([]string{"-album-url", "https://photos.app.goo.gl/test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MaxAnnotationsPerRun != 7 {
+		t.Errorf("expected MaxAnnotationsPerRun 7 from env, got %d", cfg.MaxAnnotationsPerRun)
+	}
+
+	// invalid env var
+	t.Setenv("MAX_ANNOTATIONS_PER_RUN", "not-a-number")
+	_, err = parseConfig([]string{"-album-url", "https://photos.app.goo.gl/test"})
+	if err == nil {
+		t.Errorf("expected error for invalid MAX_ANNOTATIONS_PER_RUN")
+	}
+}
+
+func TestBuildArtwork_StructuredMetadata(t *testing.T) {
+	res := &vision.AnalysisResult{
+		Title:       "Starry Night",
+		Medium:      "Oil on Canvas",
+		Description: "Swirling clouds and stars",
+		Theme:       "Post-Impressionism",
+	}
+	artwork := buildArtwork("photo-123", res, 1700000000, nil)
+	if artwork.GetId() != "photo-123" {
+		t.Errorf("expected id photo-123, got %s", artwork.GetId())
+	}
+	if artwork.GetTitle() != "Starry Night" {
+		t.Errorf("expected title Starry Night, got %s", artwork.GetTitle())
+	}
+	if artwork.GetMedium() != "Oil on Canvas" {
+		t.Errorf("expected medium Oil on Canvas, got %s", artwork.GetMedium())
+	}
+	if artwork.GetDescription() != "Swirling clouds and stars" {
+		t.Errorf("expected description Swirling clouds and stars, got %s", artwork.GetDescription())
+	}
+	if artwork.GetThemeId() != "Post-Impressionism" {
+		t.Errorf("expected theme_id Post-Impressionism, got %s", artwork.GetThemeId())
+	}
+	if artwork.GetTimestamp() != 1700000000 {
+		t.Errorf("expected timestamp 1700000000, got %d", artwork.GetTimestamp())
+	}
+	if artwork.GetImagePath() != "images/photo-123.jpg" {
+		t.Errorf("expected image_path images/photo-123.jpg, got %s", artwork.GetImagePath())
+	}
+}
+
+func TestRun_QuotaAllocation_NewPhotosExceedQuota(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	photoList := make([]photos.Photo, 10)
+	for i := 0; i < 10; i++ {
+		photoList[i] = photos.Photo{
+			ID:          fmt.Sprintf("quota-photo-%d", i),
+			DownloadURL: fmt.Sprintf("https://photos.google.com/quota-%d=w0-h0", i),
+		}
+	}
+
+	photoSvc := &mockPhotoService{
+		photos:         photoList,
+		downloadedData: rawJPEG,
+	}
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			return &vision.AnalysisResult{
+				Title:       "Sample Art",
+				Medium:      "Oil on Canvas",
+				Description: "A painted canvas",
+				Theme:       "Expressionism",
+			}, nil
+		},
+	}
+	m := metrics.NewMetrics()
+
+	t.Setenv("MAX_ANNOTATIONS_PER_RUN", "5")
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m, 5)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	// Verify all 10 were downloaded and thumbnailed
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("quota-photo-%d", i)
+		if !store.HasImage(id) {
+			t.Errorf("expected photo %s to have image downloaded", id)
+		}
+		if !store.HasThumbnail(id) {
+			t.Errorf("expected photo %s to have thumbnail generated", id)
+		}
+	}
+
+	// Verify exactly 5 vision analyses were performed
+	if visionSvc.callCount != 5 {
+		t.Errorf("expected exactly 5 vision service calls, got %d", visionSvc.callCount)
+	}
+
+	// Verify only first 5 photos have .proto.bin files
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("quota-photo-%d", i)
+		if _, err := store.ReadArtworkProto(id); err != nil {
+			t.Errorf("expected proto to exist for annotated photo %s, got %v", id, err)
+		}
+	}
+	for i := 5; i < 10; i++ {
+		id := fmt.Sprintf("quota-photo-%d", i)
+		if _, err := store.ReadArtworkProto(id); !os.IsNotExist(err) {
+			t.Errorf("expected proto NOT to exist for deferred photo %s, got %v", id, err)
+		}
+	}
+
+	// Verify metrics
+	values, _ := gatherMetricValues(t, m)
+	if values["rose_syncer_photos_annotated_total"] != 5 {
+		t.Errorf("expected 5 photos annotated metric, got %f", values["rose_syncer_photos_annotated_total"])
+	}
+}
+
+func TestRun_RateLimitHandling_GracefulExit(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	photoList := []photos.Photo{
+		{ID: "rate-limited-photo-1", DownloadURL: "https://photos.google.com/p1=w0-h0"},
+	}
+
+	photoSvc := &mockPhotoService{
+		photos:         photoList,
+		downloadedData: rawJPEG,
+	}
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			return nil, errors.New("HTTP 429: rate limited")
+		},
+	}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, m)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 on rate limit, got %d", exitCode)
+	}
+
+	// Failing photo must NOT be marked processed
+	processed, err := store.IsPhotoProcessed("rate-limited-photo-1")
+	if err != nil {
+		t.Fatalf("error checking processed state: %v", err)
+	}
+	if processed {
+		t.Errorf("expected rate-limited photo NOT to be marked processed")
+	}
+
+	// Failing photo must NOT produce .proto.bin
+	if _, err := store.ReadArtworkProto("rate-limited-photo-1"); !os.IsNotExist(err) {
+		t.Errorf("expected proto NOT to exist for rate-limited photo, got %v", err)
+	}
+
+	// No failure issue should be created on rate limit
+	if reporter.createCalls.Load() != 0 {
+		t.Errorf("expected 0 failure issues reported, got %d", reporter.createCalls.Load())
+	}
+}
+
+func TestRun_VisionError_NonDestructive(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	photoList := []photos.Photo{
+		{ID: "vision-err-p1", DownloadURL: "https://photos.google.com/p1=w0-h0"},
+		{ID: "vision-err-p2", DownloadURL: "https://photos.google.com/p2=w0-h0"},
+		{ID: "vision-err-p3", DownloadURL: "https://photos.google.com/p3=w0-h0"},
+	}
+
+	photoSvc := &mockPhotoService{
+		photos:         photoList,
+		downloadedData: rawJPEG,
+	}
+	var callCount int
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			callCount++
+			if callCount == 2 {
+				return nil, errors.New("vision inference 500 error")
+			}
+			return &vision.AnalysisResult{
+				Title:       "Valid Title",
+				Medium:      "Watercolor",
+				Description: "Valid Description",
+				Theme:       "Impressionism",
+			}, nil
+		},
+	}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 due to partial error, got %d", exitCode)
+	}
+
+	// Photo 1 should have proto and be processed
+	if _, err := store.ReadArtworkProto("vision-err-p1"); err != nil {
+		t.Errorf("expected p1 proto to exist, got %v", err)
+	}
+	p1Processed, _ := store.IsPhotoProcessed("vision-err-p1")
+	if !p1Processed {
+		t.Errorf("expected p1 to be marked processed")
+	}
+
+	// Photo 2 should NOT have proto and should NOT be processed
+	if _, err := store.ReadArtworkProto("vision-err-p2"); !os.IsNotExist(err) {
+		t.Errorf("expected p2 proto NOT to exist, got %v", err)
+	}
+	p2Processed, _ := store.IsPhotoProcessed("vision-err-p2")
+	if p2Processed {
+		t.Errorf("expected p2 NOT to be marked processed")
+	}
+
+	// Photo 3 should have proto and be processed
+	if _, err := store.ReadArtworkProto("vision-err-p3"); err != nil {
+		t.Errorf("expected p3 proto to exist, got %v", err)
+	}
+	p3Processed, _ := store.IsPhotoProcessed("vision-err-p3")
+	if !p3Processed {
+		t.Errorf("expected p3 to be marked processed")
+	}
+
+	// Verify metrics: 1 error counted, 2 photos annotated
+	values, _ := gatherMetricValues(t, m)
+	if values["rose_syncer_annotation_errors_total"] != 1 {
+		t.Errorf("expected 1 annotation error metric, got %f", values["rose_syncer_annotation_errors_total"])
+	}
+	if values["rose_syncer_photos_annotated_total"] != 2 {
+		t.Errorf("expected 2 photos annotated metric, got %f", values["rose_syncer_photos_annotated_total"])
+	}
+}
+
 
 
 
