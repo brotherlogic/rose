@@ -456,3 +456,109 @@ func TestMetrics_IncrementalHelpers(t *testing.T) {
 	}
 }
 
+func TestAnnotationMetrics_RegistrationAndRecording(t *testing.T) {
+	m := NewMetrics()
+	if m == nil {
+		t.Fatal("expected non-nil Metrics instance")
+	}
+
+	// Verify nil-receiver safety
+	var nilM *Metrics
+	nilM.IncPhotosAnnotated("new")
+	nilM.ObserveAnnotationDuration(time.Second)
+	nilM.IncAnnotationErrors()
+	nilM.RecordTheme("portrait")
+
+	// Record test metrics
+	m.IncPhotosAnnotated("new")
+	m.IncPhotosAnnotated("new")
+	m.IncPhotosAnnotated("backfill")
+	m.ObserveAnnotationDuration(1500 * time.Millisecond)
+	m.IncAnnotationErrors()
+	m.RecordTheme("impressionism")
+	m.RecordTheme("impressionism")
+	m.RecordTheme("renaissance")
+
+	mfs, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("failed to gather registered metrics: %v", err)
+	}
+
+	mfMap := make(map[string]*dto.MetricFamily)
+	for _, mf := range mfs {
+		mfMap[mf.GetName()] = mf
+	}
+
+	expectedMetrics := []string{
+		"rose_syncer_photos_annotated_total",
+		"rose_syncer_annotation_duration_seconds",
+		"rose_syncer_annotation_errors_total",
+		"rose_syncer_themes_total",
+	}
+
+	for _, name := range expectedMetrics {
+		if _, ok := mfMap[name]; !ok {
+			t.Errorf("expected metric %q to be registered in registry", name)
+		}
+	}
+
+	// Verify rose_syncer_photos_annotated_total
+	if mf, ok := mfMap["rose_syncer_photos_annotated_total"]; ok {
+		counts := make(map[string]float64)
+		for _, metric := range mf.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "source" {
+					counts[label.GetValue()] = metric.GetCounter().GetValue()
+				}
+			}
+		}
+		if counts["new"] != 2 {
+			t.Errorf("expected source=new count=2, got %f", counts["new"])
+		}
+		if counts["backfill"] != 1 {
+			t.Errorf("expected source=backfill count=1, got %f", counts["backfill"])
+		}
+	}
+
+	// Verify rose_syncer_annotation_duration_seconds
+	if mf, ok := mfMap["rose_syncer_annotation_duration_seconds"]; ok {
+		for _, metric := range mf.GetMetric() {
+			hist := metric.GetHistogram()
+			if hist.GetSampleCount() != 1 {
+				t.Errorf("expected duration sample count 1, got %d", hist.GetSampleCount())
+			}
+			if hist.GetSampleSum() != 1.5 {
+				t.Errorf("expected duration sample sum 1.5, got %f", hist.GetSampleSum())
+			}
+		}
+	}
+
+	// Verify rose_syncer_annotation_errors_total
+	if mf, ok := mfMap["rose_syncer_annotation_errors_total"]; ok {
+		for _, metric := range mf.GetMetric() {
+			val := metric.GetCounter().GetValue()
+			if val != 1 {
+				t.Errorf("expected annotation errors=1, got %f", val)
+			}
+		}
+	}
+
+	// Verify rose_syncer_themes_total
+	if mf, ok := mfMap["rose_syncer_themes_total"]; ok {
+		themeCounts := make(map[string]float64)
+		for _, metric := range mf.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "theme" {
+					themeCounts[label.GetValue()] = metric.GetCounter().GetValue()
+				}
+			}
+		}
+		if themeCounts["impressionism"] != 2 {
+			t.Errorf("expected impressionism count=2, got %f", themeCounts["impressionism"])
+		}
+		if themeCounts["renaissance"] != 1 {
+			t.Errorf("expected renaissance count=1, got %f", themeCounts["renaissance"])
+		}
+	}
+}
+

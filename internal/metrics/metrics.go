@@ -21,6 +21,10 @@ type Metrics struct {
 	storageBytes        *prometheus.GaugeVec
 	syncDuration        prometheus.Gauge
 	syncErrors          prometheus.Counter
+	photosAnnotated     *prometheus.CounterVec
+	annotationDuration  prometheus.Histogram
+	annotationErrors    prometheus.Counter
+	themesRecorded      *prometheus.CounterVec
 }
 
 // NewMetrics initializes and registers all syncer operational telemetry collectors.
@@ -67,6 +71,27 @@ func NewMetrics() *Metrics {
 		Help: "Count of errors encountered during discovery, download, or thumbnail generation.",
 	})
 
+	photosAnnotated := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rose_syncer_photos_annotated_total",
+		Help: "Total photos annotated by vision analysis partitioned by source.",
+	}, []string{"source"})
+
+	annotationDuration := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "rose_syncer_annotation_duration_seconds",
+		Help:    "Duration of vision annotation requests in seconds.",
+		Buckets: []float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120},
+	})
+
+	annotationErrors := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rose_syncer_annotation_errors_total",
+		Help: "Total count of errors encountered during vision annotation.",
+	})
+
+	themesRecorded := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rose_syncer_themes_total",
+		Help: "Total count of artworks recorded per thematic category.",
+	}, []string{"theme"})
+
 	reg.MustRegister(
 		photosDiscovered,
 		photosDownloaded,
@@ -76,12 +101,18 @@ func NewMetrics() *Metrics {
 		storageBytes,
 		syncDuration,
 		syncErrors,
+		photosAnnotated,
+		annotationDuration,
+		annotationErrors,
+		themesRecorded,
 	)
 
 	photosStored.Set(0)
 	thumbnailsStored.Set(0)
 	storageBytes.WithLabelValues("images").Set(0)
 	storageBytes.WithLabelValues("thumbnails").Set(0)
+	photosAnnotated.WithLabelValues("new")
+	photosAnnotated.WithLabelValues("backfill")
 
 	return &Metrics{
 		registry:            reg,
@@ -93,6 +124,10 @@ func NewMetrics() *Metrics {
 		storageBytes:        storageBytes,
 		syncDuration:        syncDuration,
 		syncErrors:          syncErrors,
+		photosAnnotated:     photosAnnotated,
+		annotationDuration:  annotationDuration,
+		annotationErrors:    annotationErrors,
+		themesRecorded:      themesRecorded,
 	}
 }
 
@@ -182,6 +217,38 @@ func (m *Metrics) IncStoredThumbnails() {
 		return
 	}
 	m.thumbnailsStored.Inc()
+}
+
+// IncPhotosAnnotated increments the photosAnnotated counter with label "new" or "backfill".
+func (m *Metrics) IncPhotosAnnotated(source string) {
+	if m == nil || m.photosAnnotated == nil {
+		return
+	}
+	m.photosAnnotated.WithLabelValues(source).Inc()
+}
+
+// ObserveAnnotationDuration observes duration in seconds on annotationDuration.
+func (m *Metrics) ObserveAnnotationDuration(d time.Duration) {
+	if m == nil || m.annotationDuration == nil {
+		return
+	}
+	m.annotationDuration.Observe(d.Seconds())
+}
+
+// IncAnnotationErrors increments the annotationErrors counter.
+func (m *Metrics) IncAnnotationErrors() {
+	if m == nil || m.annotationErrors == nil {
+		return
+	}
+	m.annotationErrors.Inc()
+}
+
+// RecordTheme increments the themesRecorded counter with the given theme label.
+func (m *Metrics) RecordTheme(theme string) {
+	if m == nil || m.themesRecorded == nil {
+		return
+	}
+	m.themesRecorded.WithLabelValues(theme).Inc()
 }
 
 // ScanStorage performs a single walk of images and thumbnails directories,
