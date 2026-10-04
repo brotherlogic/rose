@@ -573,6 +573,268 @@ func TestStorage_ArtworkProtoRoundTripWithMedium(t *testing.T) {
 	}
 }
 
+func TestFindUnannotatedPhotos_MissingProto(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	imgData := []byte("image-data-missing-proto")
+	if err := store.WriteImage("photo1", imgData); err != nil {
+		t.Fatalf("failed to write image: %v", err)
+	}
+
+	imgPath := filepath.Join(tempDir, "images", "photo1.jpg")
+	fi, err := os.Stat(imgPath)
+	if err != nil {
+		t.Fatalf("failed to stat image: %v", err)
+	}
+	expectedTime := fi.ModTime().Unix()
+
+	candidates, err := store.FindUnannotatedPhotos()
+	if err != nil {
+		t.Fatalf("FindUnannotatedPhotos failed: %v", err)
+	}
+
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+
+	if candidates[0].ID != "photo1" {
+		t.Errorf("expected candidate ID 'photo1', got %q", candidates[0].ID)
+	}
+	if candidates[0].Timestamp != expectedTime {
+		t.Errorf("expected candidate timestamp %d, got %d", expectedTime, candidates[0].Timestamp)
+	}
+}
+
+func TestFindUnannotatedPhotos_EmptyMedium(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	if err := store.WriteImage("photo-empty-medium", []byte("img-data")); err != nil {
+		t.Fatalf("failed to write image: %v", err)
+	}
+
+	// Proto with empty medium and specific timestamp
+	const customTimestamp = int64(1700000000)
+	artwork := &gallerypb.Artwork{
+		Id:        "photo-empty-medium",
+		Title:     "Draft Piece",
+		Medium:    "",
+		Timestamp: customTimestamp,
+	}
+	protoBytes, err := proto.Marshal(artwork)
+	if err != nil {
+		t.Fatalf("failed to marshal artwork: %v", err)
+	}
+	if err := store.WriteArtworkProto("photo-empty-medium", protoBytes); err != nil {
+		t.Fatalf("failed to write artwork proto: %v", err)
+	}
+
+	// Also add a second photo with empty medium and 0 timestamp (fallback to file modtime)
+	if err := store.WriteImage("photo-zero-ts", []byte("img-data-2")); err != nil {
+		t.Fatalf("failed to write second image: %v", err)
+	}
+	zeroArtwork := &gallerypb.Artwork{
+		Id:        "photo-zero-ts",
+		Title:     "Zero Timestamp Piece",
+		Medium:    "",
+		Timestamp: 0,
+	}
+	zeroBytes, err := proto.Marshal(zeroArtwork)
+	if err != nil {
+		t.Fatalf("failed to marshal zero artwork: %v", err)
+	}
+	if err := store.WriteArtworkProto("photo-zero-ts", zeroBytes); err != nil {
+		t.Fatalf("failed to write zero artwork proto: %v", err)
+	}
+
+	imgPath := filepath.Join(tempDir, "images", "photo-zero-ts.jpg")
+	fi, err := os.Stat(imgPath)
+	if err != nil {
+		t.Fatalf("failed to stat image: %v", err)
+	}
+	expectedZeroTs := fi.ModTime().Unix()
+
+	candidates, err := store.FindUnannotatedPhotos()
+	if err != nil {
+		t.Fatalf("FindUnannotatedPhotos failed: %v", err)
+	}
+
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+
+	foundMap := make(map[string]int64)
+	for _, c := range candidates {
+		foundMap[c.ID] = c.Timestamp
+	}
+
+	if ts, ok := foundMap["photo-empty-medium"]; !ok || ts != customTimestamp {
+		t.Errorf("expected photo-empty-medium timestamp %d, got %d (found=%v)", customTimestamp, ts, ok)
+	}
+	if ts, ok := foundMap["photo-zero-ts"]; !ok || ts != expectedZeroTs {
+		t.Errorf("expected photo-zero-ts timestamp %d, got %d (found=%v)", expectedZeroTs, ts, ok)
+	}
+}
+
+func TestFindUnannotatedPhotos_FullyAnnotatedIgnored(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	if err := store.WriteImage("photo-annotated", []byte("img-data")); err != nil {
+		t.Fatalf("failed to write image: %v", err)
+	}
+
+	artwork := &gallerypb.Artwork{
+		Id:        "photo-annotated",
+		Title:     "Masterpiece",
+		Medium:    "Oil on canvas",
+		Timestamp: 1600000000,
+	}
+	protoBytes, err := proto.Marshal(artwork)
+	if err != nil {
+		t.Fatalf("failed to marshal artwork: %v", err)
+	}
+	if err := store.WriteArtworkProto("photo-annotated", protoBytes); err != nil {
+		t.Fatalf("failed to write artwork proto: %v", err)
+	}
+
+	candidates, err := store.FindUnannotatedPhotos()
+	if err != nil {
+		t.Fatalf("FindUnannotatedPhotos failed: %v", err)
+	}
+
+	if len(candidates) != 0 {
+		t.Fatalf("expected 0 candidates for fully annotated photo, got %d: %+v", len(candidates), candidates)
+	}
+}
+
+func TestFindUnannotatedPhotos_DeterministicSorting(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	type testItem struct {
+		id string
+		ts int64
+	}
+	items := []testItem{
+		{"photo-d", 200},
+		{"photo-b", 100},
+		{"photo-a", 100},
+		{"photo-c", 300},
+		{"photo-e", 200},
+	}
+
+	for _, item := range items {
+		if err := store.WriteImage(item.id, []byte("data-"+item.id)); err != nil {
+			t.Fatalf("failed to write image %s: %v", item.id, err)
+		}
+		art := &gallerypb.Artwork{
+			Id:        item.id,
+			Timestamp: item.ts,
+			Medium:    "", // unannotated
+		}
+		pb, err := proto.Marshal(art)
+		if err != nil {
+			t.Fatalf("failed to marshal %s: %v", item.id, err)
+		}
+		if err := store.WriteArtworkProto(item.id, pb); err != nil {
+			t.Fatalf("failed to write proto %s: %v", item.id, err)
+		}
+	}
+
+	candidates, err := store.FindUnannotatedPhotos()
+	if err != nil {
+		t.Fatalf("FindUnannotatedPhotos failed: %v", err)
+	}
+
+	expectedIDs := []string{"photo-a", "photo-b", "photo-d", "photo-e", "photo-c"}
+	if len(candidates) != len(expectedIDs) {
+		t.Fatalf("expected %d candidates, got %d", len(expectedIDs), len(candidates))
+	}
+
+	for i, expectedID := range expectedIDs {
+		if candidates[i].ID != expectedID {
+			t.Errorf("candidate at index %d: expected ID %q, got %q", i, expectedID, candidates[i].ID)
+		}
+	}
+}
+
+func TestFindUnannotatedPhotos_OrphanProtoSkipped(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	orphanArt := &gallerypb.Artwork{
+		Id:        "orphan-photo",
+		Timestamp: 1000,
+		Medium:    "",
+	}
+	pb, err := proto.Marshal(orphanArt)
+	if err != nil {
+		t.Fatalf("failed to marshal orphan proto: %v", err)
+	}
+	if err := store.WriteArtworkProto("orphan-photo", pb); err != nil {
+		t.Fatalf("failed to write orphan proto: %v", err)
+	}
+
+	if err := store.WriteImage("valid-photo", []byte("img-data")); err != nil {
+		t.Fatalf("failed to write image: %v", err)
+	}
+
+	candidates, err := store.FindUnannotatedPhotos()
+	if err != nil {
+		t.Fatalf("FindUnannotatedPhotos failed: %v", err)
+	}
+
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].ID != "valid-photo" {
+		t.Errorf("expected candidate 'valid-photo', got %q", candidates[0].ID)
+	}
+}
+
+func TestFindUnannotatedPhotos_EdgeCases(t *testing.T) {
+	var nilStore *Store
+	_, err := nilStore.FindUnannotatedPhotos()
+	if err == nil {
+		t.Errorf("expected error for nil store, got nil")
+	}
+
+	tempDir := t.TempDir()
+	emptyStore := NewStore(tempDir)
+	candidates, err := emptyStore.FindUnannotatedPhotos()
+	if err != nil {
+		t.Fatalf("expected no error for nonexistent images directory, got %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("expected 0 candidates, got %d", len(candidates))
+	}
+
+	imagesDir := filepath.Join(tempDir, "images")
+	if err := os.MkdirAll(imagesDir, 0755); err != nil {
+		t.Fatalf("failed to create images dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imagesDir, "photo.png"), []byte("png"), 0644); err != nil {
+		t.Fatalf("failed to write png file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imagesDir, "photo.txt"), []byte("txt"), 0644); err != nil {
+		t.Fatalf("failed to write txt file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(imagesDir, "subfolder.jpg"), 0755); err != nil {
+		t.Fatalf("failed to create subfolder: %v", err)
+	}
+
+	candidates, err = emptyStore.FindUnannotatedPhotos()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("expected 0 candidates when only non-jpg / subdirectories exist, got %d", len(candidates))
+	}
+}
+
+
 
 
 

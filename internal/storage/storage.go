@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	gallerypb "github.com/brotherlogic/rose/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 type Store struct {
@@ -190,6 +194,88 @@ func (s *Store) MigrateLegacyImage(id string) error {
 	}
 	return nil
 }
+
+// BackfillCandidate represents a photo candidate for metadata backfill.
+type BackfillCandidate struct {
+	ID        string
+	Timestamp int64
+}
+
+// FindUnannotatedPhotos scans the store for photos that are missing annotations
+// (missing .proto.bin or empty medium field) and returns them sorted chronologically.
+func (s *Store) FindUnannotatedPhotos() ([]BackfillCandidate, error) {
+	if s == nil {
+		return nil, fmt.Errorf("nil store")
+	}
+
+	imagesDir := filepath.Join(s.BasePath, "images")
+	entries, err := os.ReadDir(imagesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []BackfillCandidate{}, nil
+		}
+		return nil, err
+	}
+
+	candidates := make([]BackfillCandidate, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jpg") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".jpg")
+		if err := validateID(id); err != nil {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil || info.IsDir() {
+			continue
+		}
+		modTime := info.ModTime().Unix()
+
+		protoBytes, err := s.ReadArtworkProto(id)
+		if err != nil {
+			if os.IsNotExist(err) {
+				candidates = append(candidates, BackfillCandidate{
+					ID:        id,
+					Timestamp: modTime,
+				})
+				continue
+			}
+			return nil, err
+		}
+
+		var artwork gallerypb.Artwork
+		if err := proto.Unmarshal(protoBytes, &artwork); err != nil {
+			candidates = append(candidates, BackfillCandidate{
+				ID:        id,
+				Timestamp: modTime,
+			})
+			continue
+		}
+
+		if artwork.GetMedium() == "" {
+			ts := artwork.GetTimestamp()
+			if ts == 0 {
+				ts = modTime
+			}
+			candidates = append(candidates, BackfillCandidate{
+				ID:        id,
+				Timestamp: ts,
+			})
+		}
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Timestamp != candidates[j].Timestamp {
+			return candidates[i].Timestamp < candidates[j].Timestamp
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+
+	return candidates, nil
+}
+
 
 
 
