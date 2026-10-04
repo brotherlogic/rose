@@ -2374,6 +2374,244 @@ func TestRun_VisionError_NonDestructive(t *testing.T) {
 	}
 }
 
+func TestRun_QuotaAllocation_RemainingQuotaBackfill(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	photoList := []photos.Photo{
+		{ID: "new-p1", DownloadURL: "https://photos.google.com/new1"},
+		{ID: "new-p2", DownloadURL: "https://photos.google.com/new2"},
+	}
+	photoSvc := &mockPhotoService{
+		photos:         photoList,
+		downloadedData: rawJPEG,
+	}
+
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("backfill-p%d", i)
+		if err := store.WriteImage(id, rawJPEG); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveProcessedPhoto(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			return &vision.AnalysisResult{
+				Title:       "Artwork Title",
+				Medium:      "Oil on Canvas",
+				Description: "Artwork Description",
+				Theme:       "Landscape",
+			}, nil
+		},
+	}
+	m := metrics.NewMetrics()
+
+	t.Setenv("MAX_ANNOTATIONS_PER_RUN", "5")
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m, 5)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	if visionSvc.callCount != 5 {
+		t.Errorf("expected vision service called 5 times, got %d", visionSvc.callCount)
+	}
+
+	for _, id := range []string{"new-p1", "new-p2"} {
+		if _, err := store.ReadArtworkProto(id); err != nil {
+			t.Errorf("expected proto for new photo %s, got %v", id, err)
+		}
+	}
+
+	for _, id := range []string{"backfill-p0", "backfill-p1", "backfill-p2"} {
+		if _, err := store.ReadArtworkProto(id); err != nil {
+			t.Errorf("expected proto for backfill photo %s, got %v", id, err)
+		}
+	}
+
+	for _, id := range []string{"backfill-p3", "backfill-p4"} {
+		if _, err := store.ReadArtworkProto(id); !os.IsNotExist(err) {
+			t.Errorf("expected proto NOT to exist for unannotated backfill photo %s, got %v", id, err)
+		}
+	}
+
+	mfs, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+	counts := make(map[string]float64)
+	for _, mf := range mfs {
+		if mf.GetName() == "rose_syncer_photos_annotated_total" {
+			for _, metric := range mf.GetMetric() {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() == "source" {
+						counts[label.GetValue()] = metric.GetCounter().GetValue()
+					}
+				}
+			}
+		}
+	}
+	if counts["new"] != 2 {
+		t.Errorf("expected 2 photos annotated with source=new, got %f", counts["new"])
+	}
+	if counts["backfill"] != 3 {
+		t.Errorf("expected 3 photos annotated with source=backfill, got %f", counts["backfill"])
+	}
+}
+
+func TestRun_QuotaDisabled_Unbounded(t *testing.T) {
+	for _, quota := range []int{0, -1} {
+		t.Run(fmt.Sprintf("quota=%d", quota), func(t *testing.T) {
+			tempDir := t.TempDir()
+			store := storage.NewStore(tempDir)
+			rawJPEG := createTestJPEG(100, 100)
+
+			photoList := []photos.Photo{
+				{ID: "unbounded-new-1", DownloadURL: "https://photos.google.com/unew1"},
+				{ID: "unbounded-new-2", DownloadURL: "https://photos.google.com/unew2"},
+			}
+			photoSvc := &mockPhotoService{
+				photos:         photoList,
+				downloadedData: rawJPEG,
+			}
+
+			for i := 0; i < 3; i++ {
+				id := fmt.Sprintf("unbounded-bf-%d", i)
+				if err := store.WriteImage(id, rawJPEG); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.SaveProcessedPhoto(id); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			visionSvc := &mockVisionService{
+				analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+					return &vision.AnalysisResult{
+						Title:       "Artwork Title",
+						Medium:      "Oil on Canvas",
+						Description: "Artwork Description",
+						Theme:       "Portrait",
+					}, nil
+				},
+			}
+			m := metrics.NewMetrics()
+
+			exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m, quota)
+			if exitCode != 0 {
+				t.Fatalf("expected exit code 0, got %d", exitCode)
+			}
+
+			if visionSvc.callCount != 5 {
+				t.Errorf("expected 5 vision calls for quota %d, got %d", quota, visionSvc.callCount)
+			}
+
+			for _, id := range []string{"unbounded-new-1", "unbounded-new-2", "unbounded-bf-0", "unbounded-bf-1", "unbounded-bf-2"} {
+				if _, err := store.ReadArtworkProto(id); err != nil {
+					t.Errorf("expected proto for %s with quota %d, got %v", id, quota, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRun_Backfill_MissingThumbnailGenerated(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(200, 200)
+
+	photoID := "bf-missing-thumb-photo"
+	if err := store.WriteImage(photoID, rawJPEG); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveProcessedPhoto(photoID); err != nil {
+		t.Fatal(err)
+	}
+
+	if store.HasThumbnail(photoID) {
+		t.Fatal("expected thumbnail NOT to exist initially")
+	}
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{},
+	}
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			return &vision.AnalysisResult{
+				Title:       "Backfill Art",
+				Medium:      "Sculpture",
+				Description: "Sculpted stone",
+				Theme:       "Abstract",
+			}, nil
+		},
+	}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m, 5)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	if !store.HasThumbnail(photoID) {
+		t.Errorf("expected thumbnail to be generated for backfill photo %s", photoID)
+	}
+
+	protoBytes, err := store.ReadArtworkProto(photoID)
+	if err != nil {
+		t.Fatalf("expected proto to exist for %s, got %v", photoID, err)
+	}
+	var artwork gallery.Artwork
+	if err := proto.Unmarshal(protoBytes, &artwork); err != nil {
+		t.Fatalf("failed to unmarshal proto: %v", err)
+	}
+	expectedThumb := "thumbnails/" + photoID + ".webp"
+	if artwork.GetThumbnailPath() != expectedThumb {
+		t.Errorf("expected thumbnail path %s, got %s", expectedThumb, artwork.GetThumbnailPath())
+	}
+}
+
+func TestRun_Backfill_RateLimitGracefulExit(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	photoID := "bf-ratelimit-photo"
+	if err := store.WriteImage(photoID, rawJPEG); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveProcessedPhoto(photoID); err != nil {
+		t.Fatal(err)
+	}
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{},
+	}
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			return nil, errors.New("HTTP 429: rate limited")
+		},
+	}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, m, 5)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 on backfill rate limit, got %d", exitCode)
+	}
+
+	if _, err := store.ReadArtworkProto(photoID); !os.IsNotExist(err) {
+		t.Errorf("expected proto NOT to exist for rate-limited backfill photo, got %v", err)
+	}
+
+	if reporter.createCalls.Load() != 0 {
+		t.Errorf("expected 0 failure issues reported, got %d", reporter.createCalls.Load())
+	}
+}
+
+
 
 
 
