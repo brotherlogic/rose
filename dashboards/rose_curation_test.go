@@ -150,8 +150,8 @@ func TestRoseCurationDashboard_PanelsDetailedRequirements(t *testing.T) {
 	_, d := loadDashboard(t, "rose-curation.json")
 	panels := extractAllPanels(d.Panels)
 
-	// 1. Artworks Annotated: single-stat or gauge referencing rose_syncer_artworks_annotated_total
-	// and rose_syncer_photos_stored for comparison
+	// 1. Artworks Annotated: single-stat panel referencing rose_syncer_artworks_annotated_total
+	// and rose_syncer_photos_stored for side-by-side comparison
 	var artworksPanel *Panel
 	for i := range panels {
 		p := &panels[i]
@@ -165,18 +165,24 @@ func TestRoseCurationDashboard_PanelsDetailedRequirements(t *testing.T) {
 	if artworksPanel == nil {
 		t.Fatal("panel with metric rose_syncer_artworks_annotated_total not found")
 	}
-	if artworksPanel.Type != "gauge" && artworksPanel.Type != "stat" {
-		t.Errorf("expected artworks panel type 'gauge' or 'stat', got '%s'", artworksPanel.Type)
+	if artworksPanel.Type != "stat" {
+		t.Errorf("expected artworks panel type 'stat', got '%s'", artworksPanel.Type)
 	}
+	hasArtworksAnnotatedRef := false
 	hasPhotoStoredRef := false
 	for _, tr := range artworksPanel.Targets {
-		if strings.Contains(tr.Expr, "rose_syncer_photos_stored") {
+		if strings.Contains(tr.Expr, "rose_syncer_artworks_annotated_total") && tr.LegendFormat == "Curated Artworks" {
+			hasArtworksAnnotatedRef = true
+		}
+		if strings.Contains(tr.Expr, "rose_syncer_photos_stored") && tr.LegendFormat == "Total Stored Photos" {
 			hasPhotoStoredRef = true
-			break
 		}
 	}
+	if !hasArtworksAnnotatedRef {
+		t.Errorf("expected artworks panel to reference rose_syncer_artworks_annotated_total with legend 'Curated Artworks'")
+	}
 	if !hasPhotoStoredRef {
-		t.Errorf("expected artworks panel to reference rose_syncer_photos_stored for comparison")
+		t.Errorf("expected artworks panel to reference rose_syncer_photos_stored with legend 'Total Stored Photos'")
 	}
 
 	// 2. Annotation Failures: stat / counter with prominent red threshold when value > 0

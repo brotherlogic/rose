@@ -55,7 +55,10 @@
       },
       "id": 1,
       "options": {
-        "orientation": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -63,11 +66,10 @@
           "fields": "",
           "values": false
         },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
+        "textMode": "value_and_name"
       },
       "title": "Artworks Annotated",
-      "type": "gauge",
+      "type": "stat",
       "description": "Curated vs Total images visualization.",
       "targets": [
         {
