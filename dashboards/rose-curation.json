@@ -262,9 +262,14 @@
       "description": "Distribution of artworks across artistic movements (including Uncategorized).",
       "targets": [
         {
-          "expr": "rose_syncer_artistic_movements_total{namespace=\"rose\"}",
+          "expr": "topk(10, rose_syncer_artistic_movements_total{namespace=\"rose\"})",
           "legendFormat": "{{theme}}",
           "refId": "A"
+        },
+        {
+          "expr": "(sum(rose_syncer_artistic_movements_total{namespace=\"rose\"}) - sum(topk(10, rose_syncer_artistic_movements_total{namespace=\"rose\"}))) > 0",
+          "legendFormat": "Other",
+          "refId": "B"
         }
       ]
     }

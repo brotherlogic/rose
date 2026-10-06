@@ -261,14 +261,22 @@ func TestRoseCurationDashboard_PanelsDetailedRequirements(t *testing.T) {
 	if movementsPanel.Type != "piechart" && movementsPanel.Type != "bargauge" && movementsPanel.Type != "bar-gauge" {
 		t.Errorf("expected movements panel type 'piechart' or 'bargauge', got '%s'", movementsPanel.Type)
 	}
-	hasThemeLegend := false
+	hasTopKTarget := false
+	hasOtherTarget := false
 	for _, tr := range movementsPanel.Targets {
-		if strings.Contains(tr.LegendFormat, "{{theme}}") || strings.Contains(tr.LegendFormat, "theme") {
-			hasThemeLegend = true
-			break
+		if strings.Contains(tr.Expr, "topk(10,") && strings.Contains(tr.Expr, "rose_syncer_artistic_movements_total") && tr.LegendFormat == "{{theme}}" {
+			hasTopKTarget = true
+		}
+		if strings.Contains(tr.Expr, "sum(rose_syncer_artistic_movements_total") &&
+			strings.Contains(tr.Expr, "sum(topk(10, rose_syncer_artistic_movements_total") &&
+			tr.LegendFormat == "Other" {
+			hasOtherTarget = true
 		}
 	}
-	if !hasThemeLegend {
-		t.Errorf("expected movements panel target to specify theme legend format")
+	if !hasTopKTarget {
+		t.Errorf("expected movements panel to contain topk(10, rose_syncer_artistic_movements_total) query with legend '{{theme}}'")
+	}
+	if !hasOtherTarget {
+		t.Errorf("expected movements panel to contain consolidated Other target expression sum(...) - sum(topk(...)) with legend 'Other'")
 	}
 }
