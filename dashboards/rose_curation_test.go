@@ -171,18 +171,18 @@ func TestRoseCurationDashboard_PanelsDetailedRequirements(t *testing.T) {
 	hasArtworksAnnotatedRef := false
 	hasPhotoStoredRef := false
 	for _, tr := range artworksPanel.Targets {
-		if strings.Contains(tr.Expr, "rose_syncer_artworks_annotated_total") && tr.LegendFormat == "Curated Artworks" {
+		if strings.Contains(tr.Expr, "max(last_over_time(rose_syncer_artworks_annotated_total") && tr.LegendFormat == "Curated Artworks" {
 			hasArtworksAnnotatedRef = true
 		}
-		if strings.Contains(tr.Expr, "rose_syncer_photos_stored") && tr.LegendFormat == "Total Stored Photos" {
+		if strings.Contains(tr.Expr, "max(last_over_time(rose_syncer_photos_stored") && tr.LegendFormat == "Total Stored Photos" {
 			hasPhotoStoredRef = true
 		}
 	}
 	if !hasArtworksAnnotatedRef {
-		t.Errorf("expected artworks panel to reference rose_syncer_artworks_annotated_total with legend 'Curated Artworks'")
+		t.Errorf("expected artworks panel to reference max(last_over_time(rose_syncer_artworks_annotated_total...)) with legend 'Curated Artworks'")
 	}
 	if !hasPhotoStoredRef {
-		t.Errorf("expected artworks panel to reference rose_syncer_photos_stored with legend 'Total Stored Photos'")
+		t.Errorf("expected artworks panel to reference max(last_over_time(rose_syncer_photos_stored...)) with legend 'Total Stored Photos'")
 	}
 
 	// 2. Annotation Failures: stat / counter with prominent red threshold when value > 0
@@ -264,19 +264,19 @@ func TestRoseCurationDashboard_PanelsDetailedRequirements(t *testing.T) {
 	hasTopKTarget := false
 	hasOtherTarget := false
 	for _, tr := range movementsPanel.Targets {
-		if strings.Contains(tr.Expr, "topk(10,") && strings.Contains(tr.Expr, "rose_syncer_artistic_movements_total") && tr.LegendFormat == "{{theme}}" {
+		if strings.Contains(tr.Expr, "topk(10, max by (theme) (last_over_time(rose_syncer_artistic_movements_total") && tr.LegendFormat == "{{theme}}" {
 			hasTopKTarget = true
 		}
-		if strings.Contains(tr.Expr, "sum(rose_syncer_artistic_movements_total") &&
-			strings.Contains(tr.Expr, "sum(topk(10, rose_syncer_artistic_movements_total") &&
+		if strings.Contains(tr.Expr, "sum(max by (theme) (last_over_time(rose_syncer_artistic_movements_total") &&
+			strings.Contains(tr.Expr, "sum(topk(10, max by (theme) (last_over_time(rose_syncer_artistic_movements_total") &&
 			tr.LegendFormat == "Other" {
 			hasOtherTarget = true
 		}
 	}
 	if !hasTopKTarget {
-		t.Errorf("expected movements panel to contain topk(10, rose_syncer_artistic_movements_total) query with legend '{{theme}}'")
+		t.Errorf("expected movements panel to contain topk(10, max by (theme) (last_over_time(rose_syncer_artistic_movements_total...))) query with legend '{{theme}}'")
 	}
 	if !hasOtherTarget {
-		t.Errorf("expected movements panel to contain consolidated Other target expression sum(...) - sum(topk(...)) with legend 'Other'")
+		t.Errorf("expected movements panel to contain consolidated Other target expression sum(max by (theme) (last_over_time(...))) - sum(topk(10, max by (theme) (last_over_time(...)))) with legend 'Other'")
 	}
 }

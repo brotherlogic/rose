@@ -73,12 +73,12 @@
       "description": "Curated vs Total images visualization.",
       "targets": [
         {
-          "expr": "rose_syncer_artworks_annotated_total{namespace=\"rose\"}",
+          "expr": "max(last_over_time(rose_syncer_artworks_annotated_total{namespace=\"rose\"}[7d]))",
           "legendFormat": "Curated Artworks",
           "refId": "A"
         },
         {
-          "expr": "rose_syncer_photos_stored{namespace=\"rose\"}",
+          "expr": "max(last_over_time(rose_syncer_photos_stored{namespace=\"rose\"}[7d]))",
           "legendFormat": "Total Stored Photos",
           "refId": "B"
         }
@@ -262,12 +262,12 @@
       "description": "Distribution of artworks across artistic movements (including Uncategorized).",
       "targets": [
         {
-          "expr": "topk(10, rose_syncer_artistic_movements_total{namespace=\"rose\"})",
+          "expr": "topk(10, max by (theme) (last_over_time(rose_syncer_artistic_movements_total{namespace=\"rose\"}[7d])))",
           "legendFormat": "{{theme}}",
           "refId": "A"
         },
         {
-          "expr": "(sum(rose_syncer_artistic_movements_total{namespace=\"rose\"}) - sum(topk(10, rose_syncer_artistic_movements_total{namespace=\"rose\"}))) > 0",
+          "expr": "(sum(max by (theme) (last_over_time(rose_syncer_artistic_movements_total{namespace=\"rose\"}[7d]))) - sum(topk(10, max by (theme) (last_over_time(rose_syncer_artistic_movements_total{namespace=\"rose\"}[7d]))))) > 0",
           "legendFormat": "Other",
           "refId": "B"
         }
