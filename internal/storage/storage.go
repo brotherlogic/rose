@@ -222,6 +222,19 @@ func (s *Store) ReadArtworkProto(id string) ([]byte, error) {
 	return os.ReadFile(filePath)
 }
 
+// HasArtworkProto returns true if a non-directory artwork proto file exists for the given photo ID.
+func (s *Store) HasArtworkProto(id string) bool {
+	if s == nil {
+		return false
+	}
+	if err := validateID(id); err != nil {
+		return false
+	}
+	filePath := filepath.Join(s.BasePath, id+".proto.bin")
+	fi, err := os.Stat(filePath)
+	return err == nil && !fi.IsDir()
+}
+
 // HasImage returns true if a non-directory raw image file exists for the given photo ID.
 func (s *Store) HasImage(id string) bool {
 	if s == nil {

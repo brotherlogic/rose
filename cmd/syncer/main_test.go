@@ -1332,6 +1332,20 @@ func TestRun_LargeAlbumPaginationIntegration(t *testing.T) {
 		if err := store.WriteThumbnail(photoList[i].ID, []byte("RIFFxxxxWEBP")); err != nil {
 			t.Fatalf("failed to seed thumbnail %s: %v", photoList[i].ID, err)
 		}
+		protoBytes, err := proto.Marshal(&gallery.Artwork{
+			Id:            photoList[i].ID,
+			Title:         "Sample Artwork",
+			Medium:        "Oil on Canvas",
+			Description:   "Description",
+			ThemeId:       "Nature",
+			ThumbnailPath: "thumbnails/" + photoList[i].ID + ".webp",
+		})
+		if err != nil {
+			t.Fatalf("failed to marshal proto %s: %v", photoList[i].ID, err)
+		}
+		if err := store.WriteArtworkProto(photoList[i].ID, protoBytes); err != nil {
+			t.Fatalf("failed to seed artwork proto %s: %v", photoList[i].ID, err)
+		}
 	}
 
 	photoSvc := &mockPhotoService{
@@ -1833,6 +1847,20 @@ func TestBackfillMissingThumbnails_AlreadyHasThumbnail(t *testing.T) {
 	}
 	if err := store.WriteThumbnail(photoID, thumbBytes); err != nil {
 		t.Fatalf("failed to write thumbnail: %v", err)
+	}
+	protoBytes, err := proto.Marshal(&gallery.Artwork{
+		Id:            photoID,
+		Title:         "Sample Artwork",
+		Medium:        "Oil on Canvas",
+		Description:   "Description",
+		ThemeId:       "Vintage",
+		ThumbnailPath: "thumbnails/" + photoID + ".webp",
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal proto: %v", err)
+	}
+	if err := store.WriteArtworkProto(photoID, protoBytes); err != nil {
+		t.Fatalf("failed to write artwork proto: %v", err)
 	}
 
 	photoSvc := &mockPhotoService{
@@ -2608,6 +2636,87 @@ func TestRun_Backfill_RateLimitGracefulExit(t *testing.T) {
 
 	if reporter.createCalls.Load() != 0 {
 		t.Errorf("expected 0 failure issues reported, got %d", reporter.createCalls.Load())
+	}
+}
+
+func TestRun_Backfill_PhotosInAlbumAndSyncState_MissingProto(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	// Existing photos are in the Google Photos album AND marked processed in .sync-state.json,
+	// but do NOT have .proto.bin files on disk (e.g. ingested in Milestone 1).
+	photoList := []photos.Photo{
+		{ID: "existing-p1", DownloadURL: "https://photos.google.com/existing1"},
+		{ID: "existing-p2", DownloadURL: "https://photos.google.com/existing2"},
+		{ID: "existing-p3", DownloadURL: "https://photos.google.com/existing3"},
+	}
+	photoSvc := &mockPhotoService{
+		photos:         photoList,
+		downloadedData: rawJPEG,
+	}
+
+	for _, p := range photoList {
+		if err := store.WriteImage(p.ID, rawJPEG); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveProcessedPhoto(p.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			return &vision.AnalysisResult{
+				Title:       "Artwork Title",
+				Medium:      "Oil on Canvas",
+				Description: "Artwork Description",
+				Theme:       "Impressionism",
+			}, nil
+		},
+	}
+	m := metrics.NewMetrics()
+
+	t.Setenv("MAX_ANNOTATIONS_PER_RUN", "2")
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m, 2)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	// Quota is 2, so 2 of the 3 photos should be backfilled
+	if visionSvc.callCount != 2 {
+		t.Errorf("expected vision service called 2 times for backfill, got %d", visionSvc.callCount)
+	}
+
+	// 2 photos should have artwork proto files generated on disk
+	annotatedCount := 0
+	for _, p := range photoList {
+		if store.HasArtworkProto(p.ID) {
+			annotatedCount++
+		}
+	}
+	if annotatedCount != 2 {
+		t.Errorf("expected 2 photos with artwork proto on disk, got %d", annotatedCount)
+	}
+
+	// Check rose_syncer_artworks_annotated_total gauge
+	mfs, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+	var artworksAnnotatedVal float64
+	var foundArtworksMetric bool
+	for _, mf := range mfs {
+		if mf.GetName() == "rose_syncer_artworks_annotated_total" {
+			artworksAnnotatedVal = mf.GetMetric()[0].GetGauge().GetValue()
+			foundArtworksMetric = true
+			break
+		}
+	}
+	if !foundArtworksMetric {
+		t.Errorf("expected metric rose_syncer_artworks_annotated_total to be gathered")
+	} else if artworksAnnotatedVal != 2 {
+		t.Errorf("expected rose_syncer_artworks_annotated_total to be 2, got %f", artworksAnnotatedVal)
 	}
 }
 

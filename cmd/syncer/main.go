@@ -268,6 +268,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 	log.Printf("Fetched %d photo(s) to process", fetchedCount)
 
 	var attemptedCount, successCount, errorCount, newAnnotationsCount int
+	attemptedInPhase1 := make(map[string]bool)
 	for _, photo := range photosList {
 		if ctx.Err() != nil {
 			m.IncSyncErrors()
@@ -409,6 +410,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		}
 
 		attemptedCount++
+		attemptedInPhase1[photo.ID] = true
 
 		// Stream raw image bytes
 		imgBytes, err := photoSvc.DownloadImage(ctx, photo.DownloadURL)
@@ -606,7 +608,10 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		}
 
 		for _, candidate := range candidates {
-			if seenPhotos[candidate.ID] {
+			if attemptedInPhase1[candidate.ID] {
+				continue
+			}
+			if seenPhotos[candidate.ID] && store.HasArtworkProto(candidate.ID) {
 				continue
 			}
 

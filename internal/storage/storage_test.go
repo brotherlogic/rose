@@ -358,6 +358,44 @@ func TestStorage_ReadArtworkProto(t *testing.T) {
 	}
 }
 
+func TestStorage_HasArtworkProto(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	// Initially false
+	if store.HasArtworkProto("photo1") {
+		t.Errorf("expected HasArtworkProto to be false initially")
+	}
+
+	// Nil store
+	var nilStore *Store
+	if nilStore.HasArtworkProto("photo1") {
+		t.Errorf("expected nil store HasArtworkProto to be false")
+	}
+
+	// Invalid ID
+	if store.HasArtworkProto("../bad") {
+		t.Errorf("expected HasArtworkProto to be false for invalid id")
+	}
+
+	// Write proto
+	if err := store.WriteArtworkProto("photo1", []byte("proto-bytes")); err != nil {
+		t.Fatalf("failed to write artwork proto: %v", err)
+	}
+	if !store.HasArtworkProto("photo1") {
+		t.Errorf("expected HasArtworkProto to be true after writing proto")
+	}
+
+	// Directory instead of file
+	dirPath := filepath.Join(tempDir, "dir-proto.proto.bin")
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
+	if store.HasArtworkProto("dir-proto") {
+		t.Errorf("expected HasArtworkProto to be false when path is a directory")
+	}
+}
+
 func TestStorage_HasImage(t *testing.T) {
 	tempDir := t.TempDir()
 	store := NewStore(tempDir)
