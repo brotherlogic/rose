@@ -13,8 +13,17 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Artist Portfolio",
-  description: "Automated Gallery Website",
+  title: "Rose Seraphine Tucker — Retrospective",
+  description:
+    "An austere contemporary retrospective presenting the foundational and conceptual works of Rose Seraphine Tucker.",
+  openGraph: {
+    title: "Rose Seraphine Tucker — Retrospective",
+    description:
+      "An austere contemporary retrospective presenting the foundational and conceptual works of Rose Seraphine Tucker.",
+    siteName: "Rose Seraphine Tucker Retrospective",
+    type: "website",
+    locale: "en_US",
+  },
 };
 
 export default function RootLayout({
@@ -24,7 +33,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
-      <body>{children}</body>
+      <body>
+        <header role="banner" />
+        <main role="main">{children}</main>
+        <footer role="contentinfo" />
+      </body>
     </html>
   );
 }
