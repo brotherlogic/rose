@@ -27,6 +27,28 @@ export function getArtworkPaths(): { id: string }[] {
   }
 }
 
+interface HasToNumber {
+  toNumber: () => number;
+}
+
+function hasToNumber(val: unknown): val is HasToNumber {
+  return (
+    typeof val === 'object' &&
+    val !== null &&
+    'toNumber' in val &&
+    typeof (val as { toNumber: unknown }).toNumber === 'function'
+  );
+}
+
+function getTimestamp(timestamp: unknown): number {
+  if (!timestamp) return 0;
+  if (typeof timestamp === 'number') return timestamp;
+  if (hasToNumber(timestamp)) {
+    return timestamp.toNumber();
+  }
+  return Number(timestamp) || 0;
+}
+
 export function getArtworks(): gallery.IArtwork[] {
   const nfsPath = getNfsPath();
   const paths = getArtworkPaths();
@@ -38,6 +60,11 @@ export function getArtworks(): gallery.IArtwork[] {
       try {
         const buffer = fs.readFileSync(protoFile);
         const artwork = gallery.Artwork.decode(new Uint8Array(buffer));
+
+        artwork.title = artwork.title?.trim() || 'Untitled';
+        artwork.medium = artwork.medium?.trim() || 'Mixed Media';
+        artwork.thumbnailPath = artwork.thumbnailPath || artwork.imagePath || '/placeholder.svg';
+
         artworks.push(artwork);
       } catch (error) {
         console.error(`Error reading or decoding ${protoFile}:`, error);
@@ -45,5 +72,12 @@ export function getArtworks(): gallery.IArtwork[] {
     }
   }
 
+  artworks.sort((a, b) => {
+    const timeA = getTimestamp(a.timestamp);
+    const timeB = getTimestamp(b.timestamp);
+    return timeB - timeA;
+  });
+
   return artworks;
 }
+
