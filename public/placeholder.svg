@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="100%" height="100%" fill="none" role="img" aria-label="Archival artwork placeholder">
+  <rect width="400" height="400" fill="#18181b"/>
+  <rect x="24" y="24" width="352" height="352" stroke="#27272a" stroke-width="1"/>
+  <circle cx="200" cy="180" r="48" stroke="#3f3f46" stroke-width="1" stroke-dasharray="2 2"/>
+  <path d="M180 180h40M200 160v40" stroke="#52525b" stroke-width="1"/>
+  <text x="200" y="260" text-anchor="middle" font-family="'Didot', 'Bodoni MT', 'Cinzel', serif" font-size="11" fill="#71717a" letter-spacing="0.25em">ARCHIVAL RECORD</text>
+  <text x="200" y="280" text-anchor="middle" font-family="monospace" font-size="9" fill="#52525b" letter-spacing="0.15em">IMAGE UNAVAILABLE</text>
+</svg>
