@@ -61,6 +61,26 @@ describe('Containerization Configuration', () => {
       expect(content).toContain('public, max-age=604800');
     });
 
+    it('should configure health check endpoint /healthz returning 200 OK', () => {
+      const content = fs.readFileSync(nginxConfPath, 'utf-8');
+      expect(content).toMatch(/location\s*=\s*\/healthz\s*\{/);
+      expect(content).toMatch(/access_log\s+off;/);
+      expect(content).toMatch(/default_type\s+text\/plain;/);
+      expect(content).toMatch(/return\s+200\s+'OK';/);
+    });
+
+    it('should configure dedicated NFS media routes for /data/images/ and /data/thumbnails/ with strict 404', () => {
+      const content = fs.readFileSync(nginxConfPath, 'utf-8');
+      expect(content).toMatch(/location\s+\/data\/images\/\s*\{/);
+      expect(content).toMatch(/location\s+\/data\/thumbnails\/\s*\{/);
+      expect(content).toContain('alias /data/images/;');
+      expect(content).toContain('alias /data/thumbnails/;');
+      expect(content).toContain('expires 1d;');
+      expect(content).toContain('add_header Cache-Control "public, max-age=86400, must-revalidate";');
+      expect(content).toContain('add_header Access-Control-Allow-Origin "*";');
+      expect(content).toContain('try_files $uri =404;');
+    });
+
     it('should configure SPA routing fallback for static HTML pages', () => {
       const content = fs.readFileSync(nginxConfPath, 'utf-8');
       expect(content).toContain('try_files $uri $uri.html $uri/ /index.html =404;');
