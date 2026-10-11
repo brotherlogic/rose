@@ -9,17 +9,18 @@ vi.mock('@/lib/nfs', () => ({
 
 import Home from '../app/page';
 
-describe('Homepage VirtualizedGalleryGrid Integration Suite (#266)', () => {
+describe('Homepage CuratedGalleryCollection Integration Suite (#278)', () => {
   beforeEach(() => {
     mockGetArtworks.mockReset();
   });
 
-  it('should render VirtualizedGalleryGrid within the #collection section preserving editorial sections', () => {
+  it('should render CuratedGalleryCollection within the #collection section preserving editorial sections', () => {
     mockGetArtworks.mockReturnValue([
       {
         id: 'art-001',
         title: 'Avant-Garde Construct No. 1',
         medium: 'Oil on Unstretched Canvas',
+        theme: 'The Crayon Period',
         thumbnailPath: '/data/thumbnails/art-001.webp',
         imagePath: '/data/images/art-001.jpg',
         timestamp: 1712707200,
@@ -38,7 +39,12 @@ describe('Homepage VirtualizedGalleryGrid Integration Suite (#266)', () => {
     expect(markup).toContain('id="collection"');
     expect(markup).toContain('The Permanent Collection');
 
-    // Verify VirtualizedGalleryGrid container and ArtworkCard rendering
+    // Verify CuratedGalleryCollection (filter bar & grid) integration
+    expect(markup).toContain('aria-label="Exhibition period filtering"');
+    expect(markup).toContain('All Works (1)');
+    expect(markup).toContain('The Crayon Period (1)');
+
+    // Verify ArtworkCard rendering inside the collection
     expect(markup).toContain('Avant-Garde Construct No. 1');
     expect(markup).toContain('Oil on Unstretched Canvas');
     expect(markup).toContain('uppercase');
@@ -46,7 +52,7 @@ describe('Homepage VirtualizedGalleryGrid Integration Suite (#266)', () => {
     expect(markup).toContain('/data/thumbnails/art-001.webp');
   });
 
-  it('should delegate empty state handling to VirtualizedGalleryGrid when artworks is empty', () => {
+  it('should delegate empty state handling when artworks is empty', () => {
     mockGetArtworks.mockReturnValue([]);
 
     const markup = renderToStaticMarkup(React.createElement(Home));

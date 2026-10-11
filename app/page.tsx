@@ -1,9 +1,8 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { getArtworks } from '@/lib/nfs';
 import EditorialStatement from './components/EditorialStatement';
 import EditorialBiography from './components/EditorialBiography';
-
-import VirtualizedGalleryGrid from './components/VirtualizedGalleryGrid';
+import CuratedGalleryCollection from './components/CuratedGalleryCollection';
 
 export default function Home() {
   const artworks = getArtworks();
@@ -38,7 +37,9 @@ export default function Home() {
             </p>
           </header>
 
-          <VirtualizedGalleryGrid artworks={artworks} />
+          <Suspense fallback={null}>
+            <CuratedGalleryCollection artworks={artworks} />
+          </Suspense>
         </div>
       </section>
     </div>
