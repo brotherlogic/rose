@@ -21,10 +21,37 @@ vi.mock('@/lib/nfs', () => ({
 import RootLayout, { metadata } from '../app/layout';
 import Home from '../app/page';
 import Footer from '../app/components/Footer';
+import CuratedGalleryCollection from '../app/components/CuratedGalleryCollection';
+import ExhibitionEmptyState from '../app/components/ExhibitionEmptyState';
+import * as useGalleryFilterModule from '../app/hooks/useGalleryFilter';
+
+function findElements(node: React.ReactNode, predicate: (el: React.ReactElement) => boolean): React.ReactElement[] {
+  const matches: React.ReactElement[] = [];
+
+  function traverse(current: React.ReactNode) {
+    if (!current) return;
+    if (Array.isArray(current)) {
+      current.forEach(traverse);
+      return;
+    }
+    if (React.isValidElement(current)) {
+      if (predicate(current)) {
+        matches.push(current);
+      }
+      if (current.props && (current.props as { children?: React.ReactNode }).children) {
+        traverse((current.props as { children?: React.ReactNode }).children);
+      }
+    }
+  }
+
+  traverse(node);
+  return matches;
+}
 
 describe('Editorial Gallery & Museum Shell Integration Suite (#255)', () => {
   beforeEach(() => {
     mockGetArtworks.mockReset();
+    vi.restoreAllMocks();
   });
 
   describe('Austere Curatorial Footer (app/components/Footer.tsx)', () => {
@@ -185,6 +212,160 @@ describe('Editorial Gallery & Museum Shell Integration Suite (#255)', () => {
       expect(metadata.openGraph).toBeDefined();
       expect(metadata.openGraph?.title).toBe('Rose Seraphine Tucker — Retrospective');
       expect(metadata.openGraph?.siteName).toBe('Rose Seraphine Tucker Retrospective');
+    });
+  });
+
+  describe('End-to-End Exhibition Filtering & Interactive Retrospective Suite (#279)', () => {
+    const mockArtworks = [
+      {
+        id: 'art-001',
+        title: 'Study in Crayon No. 1',
+        medium: 'Wax crayon on salvaged paper',
+        theme: 'The Crayon Period',
+        thumbnailPath: '/data/thumbnails/art-001.webp',
+        imagePath: '/data/images/art-001.jpg',
+        timestamp: 1712707200, // Newer (2024-04-10)
+      },
+      {
+        id: 'art-002',
+        title: 'Domestic Construction No. 1',
+        medium: 'Cardboard and packing tape',
+        theme: 'Domestic Destructionism',
+        thumbnailPath: '/data/thumbnails/art-002.webp',
+        imagePath: '/data/images/art-002.jpg',
+        timestamp: 1700000000, // Older (2023-11-14)
+      },
+      {
+        id: 'art-003',
+        title: 'Study in Crayon No. 2',
+        medium: 'Crayon on recycled newsprint',
+        theme: 'The Crayon Period',
+        thumbnailPath: '/data/thumbnails/art-003.webp',
+        imagePath: '/data/images/art-003.jpg',
+        timestamp: 1710000000, // Mid (2024-03-09)
+      },
+    ];
+
+    it('should verify complete homepage rendering with EditorialStatement, EditorialBiography, and #collection featuring CuratedGalleryCollection', () => {
+      mockGetArtworks.mockReturnValue(mockArtworks);
+      const markup = renderToStaticMarkup(React.createElement(Home));
+
+      // EditorialStatement rendered
+      expect(markup).toContain('id="statement"');
+      expect(markup).toContain('Curatorial Statement');
+
+      // EditorialBiography rendered
+      expect(markup).toContain('id="biography"');
+      expect(markup).toContain('Historical Movements Taxonomy');
+
+      // #collection rendered with CuratedGalleryCollection
+      expect(markup).toContain('id="collection"');
+      expect(markup).toContain('data-testid="curated-gallery-collection"');
+      expect(markup).toContain('aria-label="Exhibition period filtering"');
+      expect(markup).toContain('role="tablist"');
+      expect(markup).toContain('All Works (3)');
+      expect(markup).toContain('The Crayon Period (2)');
+      expect(markup).toContain('Domestic Destructionism (1)');
+      expect(markup).toContain('Newest First');
+    });
+
+    it('should verify movement filter pill selection filters artworks correctly', () => {
+      mockGetArtworks.mockReturnValue(mockArtworks);
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: 'The Crayon Period',
+        sortDirection: 'desc',
+        setMovement: vi.fn(),
+        setSortDirection: vi.fn(),
+        resetFilter: vi.fn(),
+      });
+
+      const markup = renderToStaticMarkup(React.createElement(Home));
+
+      expect(markup).toContain('Study in Crayon No. 1');
+      expect(markup).toContain('Study in Crayon No. 2');
+      expect(markup).not.toContain('Domestic Construction No. 1');
+    });
+
+    it('should verify sort toggle reverses chronological order', () => {
+      mockGetArtworks.mockReturnValue(mockArtworks);
+
+      // Default desc (Newest first: art-001 [1712707200], art-003 [1710000000], art-002 [1700000000])
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: null,
+        sortDirection: 'desc',
+        setMovement: vi.fn(),
+        setSortDirection: vi.fn(),
+        resetFilter: vi.fn(),
+      });
+      const descMarkup = renderToStaticMarkup(React.createElement(Home));
+      const descIdx1 = descMarkup.indexOf('Study in Crayon No. 1');
+      const descIdx2 = descMarkup.indexOf('Domestic Construction No. 1');
+      expect(descIdx1).toBeLessThan(descIdx2);
+
+      // Ascending (Earliest first: art-002 [1700000000], art-003 [1710000000], art-001 [1712707200])
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: null,
+        sortDirection: 'asc',
+        setMovement: vi.fn(),
+        setSortDirection: vi.fn(),
+        resetFilter: vi.fn(),
+      });
+      const ascMarkup = renderToStaticMarkup(React.createElement(Home));
+      const ascIdx1 = ascMarkup.indexOf('Study in Crayon No. 1');
+      const ascIdx2 = ascMarkup.indexOf('Domestic Construction No. 1');
+      expect(ascIdx2).toBeLessThan(ascIdx1);
+    });
+
+    it('should verify filtering to empty movement displays curatorial empty notice and resets on button click', () => {
+      mockGetArtworks.mockReturnValue(mockArtworks);
+      const resetFilterMock = vi.fn();
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: 'Monochrome Nihilism',
+        sortDirection: 'desc',
+        setMovement: vi.fn(),
+        setSortDirection: vi.fn(),
+        resetFilter: resetFilterMock,
+      });
+
+      const markup = renderToStaticMarkup(React.createElement(Home));
+      expect(markup).toContain('Monochrome Nihilism');
+      expect(markup).toContain('No works from this movement are currently on public exhibition.');
+      expect(markup).toContain('Return to All Works');
+
+      // Verify reset action
+      const collectionTree = CuratedGalleryCollection({ artworks: mockArtworks });
+      const emptyStateEl = findElements(collectionTree, (el) => el.type === ExhibitionEmptyState)[0];
+      expect(emptyStateEl).toBeDefined();
+      emptyStateEl.props.onReset();
+      expect(resetFilterMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('should verify backward compatibility for artworks with missing or legacy theme_id', () => {
+      mockGetArtworks.mockReturnValue([
+        {
+          id: 'art-legacy-01',
+          title: 'Legacy Crayon Work',
+          medium: 'Wax on wood',
+          themeId: 'The Crayon Period', // Legacy property
+          timestamp: 1600000000,
+        },
+        {
+          id: 'art-legacy-02',
+          title: 'Unthemed Early Work',
+          medium: 'Pencil on scrap paper',
+          // Missing theme / themeId
+          timestamp: 1500000000,
+        },
+      ]);
+
+      const markup = renderToStaticMarkup(React.createElement(Home));
+
+      // Legacy themeId is properly aggregated under "The Crayon Period"
+      expect(markup).toContain('The Crayon Period (1)');
+      // Missing theme falls back gracefully to canonical "Early Works"
+      expect(markup).toContain('Early Works (1)');
+      expect(markup).toContain('Legacy Crayon Work');
+      expect(markup).toContain('Unthemed Early Work');
     });
   });
 });

@@ -25,14 +25,18 @@ export default function CuratedGalleryCollection({
   } = useGalleryFilter();
 
   if (totalCount === 0) {
-    return <VirtualizedGalleryGrid artworks={artworks} />;
+    return (
+      <div data-testid="curated-gallery-collection" className="w-full">
+        <VirtualizedGalleryGrid artworks={artworks} />
+      </div>
+    );
   }
 
   const movements = aggregateMovements(artworks);
   const filteredArtworks = filterAndSortArtworks(artworks, selectedMovement, sortDirection);
 
   return (
-    <div className="flex flex-col gap-8 w-full">
+    <div data-testid="curated-gallery-collection" className="flex flex-col gap-8 w-full">
       <ExhibitionFilterBar
         movements={movements}
         totalCount={totalCount}
