@@ -66,12 +66,23 @@ describe('PR Validation Workflow (.github/workflows/validate-pr.yml)', () => {
       expect(content).toMatch(/docker\s+run\s+-d\s+--name\s+test-gallery\s+-p\s+8080:80\s+rose-gallery-test:\$\{\{\s*github\.sha\s*\}\}/);
     });
 
-    it('should implement healthcheck polling loop with 15 attempts and 2-second sleep', () => {
+    it('should implement healthcheck polling loop querying /healthz with 15 attempts and 2-second sleep', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
       expect(content).toMatch(/15/);
       expect(content).toMatch(/sleep\s+2/);
-      expect(content).toMatch(/curl\s+.*http:\/\/localhost:8080\//);
-      expect(content).toContain('Artist Portfolio');
+      expect(content).toMatch(/curl\s+.*http:\/\/localhost:8080\/healthz/);
+    });
+
+    it('should verify root page branding contains ROSE SERAPHINE TUCKER and The Permanent Collection', () => {
+      const content = fs.readFileSync(workflowPath, 'utf-8');
+      expect(content).toContain('ROSE SERAPHINE TUCKER');
+      expect(content).toContain('The Permanent Collection');
+    });
+
+    it('should verify requests for missing thumbnail assets return HTTP 404', () => {
+      const content = fs.readFileSync(workflowPath, 'utf-8');
+      expect(content).toMatch(/http:\/\/localhost:8080\/data\/thumbnails\/nonexistent\.webp/);
+      expect(content).toMatch(/404/);
     });
 
     it('should handle cleanup on success and failure', () => {
@@ -89,7 +100,7 @@ describe('PR Validation Workflow (.github/workflows/validate-pr.yml)', () => {
   });
 
   describe('Healthcheck Script Execution Logic', () => {
-    it('should pass on successful healthcheck response and clean up container', () => {
+    it('should pass on successful healthcheck, branding, and 404 responses and clean up container', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
       const parsed = yaml.load(content) as WorkflowDefinition;
       const job = Object.values(parsed.jobs || {})[0];
@@ -99,7 +110,11 @@ describe('PR Validation Workflow (.github/workflows/validate-pr.yml)', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'healthcheck-test-success-'));
       try {
         fs.writeFileSync(path.join(tmpDir, 'docker'), '#!/bin/sh\necho docker "$@" >> ' + path.join(tmpDir, 'trace.log') + '\n', { mode: 0o755 });
-        fs.writeFileSync(path.join(tmpDir, 'curl'), '#!/bin/sh\necho "Artist Portfolio"\nexit 0\n', { mode: 0o755 });
+        fs.writeFileSync(
+          path.join(tmpDir, 'curl'),
+          '#!/bin/sh\ncase "$*" in\n  *healthz*)\n    exit 0\n    ;;\n  *nonexistent.webp*)\n    printf "404"\n    exit 0\n    ;;\n  *)\n    printf "ROSE SERAPHINE TUCKER\\nThe Permanent Collection\\n"\n    exit 0\n    ;;\nesac\n',
+          { mode: 0o755 }
+        );
 
         cp.execSync(healthcheckStep?.run || '', {
           env: { ...process.env, PATH: tmpDir + ':' + process.env.PATH },
