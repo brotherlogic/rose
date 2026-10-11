@@ -1,10 +1,34 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import * as fs from 'fs';
 import * as path from 'path';
 import ArtworkCard from '../app/components/ArtworkCard';
 import { gallery } from './proto/gallery';
+
+// Helper to recursively find elements by predicate
+function findElements(node: React.ReactNode, predicate: (el: React.ReactElement) => boolean): React.ReactElement[] {
+  const matches: React.ReactElement[] = [];
+
+  function traverse(current: React.ReactNode) {
+    if (!current) return;
+    if (Array.isArray(current)) {
+      current.forEach(traverse);
+      return;
+    }
+    if (React.isValidElement(current)) {
+      if (predicate(current)) {
+        matches.push(current);
+      }
+      if (current.props && (current.props as { children?: React.ReactNode }).children) {
+        traverse((current.props as { children?: React.ReactNode }).children);
+      }
+    }
+  }
+
+  traverse(node);
+  return matches;
+}
 
 describe('Museum Artwork Card Component Suite (#264)', () => {
   const mockArtwork: gallery.IArtwork = {
@@ -131,5 +155,54 @@ describe('Museum Artwork Card Component Suite (#264)', () => {
         expect(markup).toContain('truncate');
       });
     });
+
+    describe('Interactive Dialog Trigger Button & Selection (#298)', () => {
+      it('should wrap the card image container in an accessible interactive trigger button', () => {
+        const markup = renderToStaticMarkup(React.createElement(ArtworkCard, { artwork: mockArtwork }));
+        expect(markup).toContain('aria-haspopup="dialog"');
+        expect(markup).toMatch(/<button[^>]+type="button"[^>]+aria-haspopup="dialog"/);
+      });
+
+      it('should invoke onSelect callback with artwork and trigger element when clicked', () => {
+        const onSelectMock = vi.fn();
+        let captured: React.ReactElement | null = null;
+        function Wrapper() {
+          const el = ArtworkCard({ artwork: mockArtwork, onSelect: onSelectMock });
+          captured = el;
+          return el;
+        }
+        renderToStaticMarkup(React.createElement(Wrapper));
+        const buttons = findElements(captured, (el) => el.type === 'button' && el.props['aria-haspopup'] === 'dialog');
+        expect(buttons.length).toBe(1);
+        const triggerBtn = buttons[0];
+        const mockTarget = { tagName: 'BUTTON' } as unknown as HTMLElement;
+        triggerBtn.props.onClick({ currentTarget: mockTarget, preventDefault: vi.fn() });
+        expect(onSelectMock).toHaveBeenCalledWith(mockArtwork, mockTarget);
+      });
+
+      it('should invoke onSelect callback on Enter and Space keyboard events', () => {
+        const onSelectMock = vi.fn();
+        let captured: React.ReactElement | null = null;
+        function Wrapper() {
+          const el = ArtworkCard({ artwork: mockArtwork, onSelect: onSelectMock });
+          captured = el;
+          return el;
+        }
+        renderToStaticMarkup(React.createElement(Wrapper));
+        const buttons = findElements(captured, (el) => el.type === 'button' && el.props['aria-haspopup'] === 'dialog');
+        expect(buttons.length).toBe(1);
+        const triggerBtn = buttons[0];
+        const mockTarget = { tagName: 'BUTTON' } as unknown as HTMLElement;
+
+        triggerBtn.props.onKeyDown({ key: 'Enter', preventDefault: vi.fn(), currentTarget: mockTarget });
+        expect(onSelectMock).toHaveBeenCalledTimes(1);
+        expect(onSelectMock).toHaveBeenCalledWith(mockArtwork, mockTarget);
+
+        triggerBtn.props.onKeyDown({ key: ' ', preventDefault: vi.fn(), currentTarget: mockTarget });
+        expect(onSelectMock).toHaveBeenCalledTimes(2);
+        expect(onSelectMock).toHaveBeenLastCalledWith(mockArtwork, mockTarget);
+      });
+    });
   });
 });
+
