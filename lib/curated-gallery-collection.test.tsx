@@ -1,0 +1,233 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import CuratedGalleryCollection from '../app/components/CuratedGalleryCollection';
+import ExhibitionEmptyState from '../app/components/ExhibitionEmptyState';
+import ExhibitionFilterBar from '../app/components/ExhibitionFilterBar';
+import * as galleryFilterModule from '../lib/gallery-filter';
+import * as useGalleryFilterModule from '../app/hooks/useGalleryFilter';
+import type { gallery } from '../lib/proto/gallery';
+
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+// Helper to recursively find elements by predicate
+function findElements(node: React.ReactNode, predicate: (el: React.ReactElement) => boolean): React.ReactElement[] {
+  const matches: React.ReactElement[] = [];
+
+  function traverse(current: React.ReactNode) {
+    if (!current) return;
+    if (Array.isArray(current)) {
+      current.forEach(traverse);
+      return;
+    }
+    if (React.isValidElement(current)) {
+      if (predicate(current)) {
+        matches.push(current);
+      }
+      if (current.props && (current.props as { children?: React.ReactNode }).children) {
+        traverse((current.props as { children?: React.ReactNode }).children);
+      }
+    }
+  }
+
+  traverse(node);
+  return matches;
+}
+
+describe('CuratedGalleryCollection Container Component Suite (#278)', () => {
+  const sampleArtworks: gallery.IArtwork[] = [
+    {
+      id: 'art-001',
+      title: 'Crayon Drawing No. 1',
+      medium: 'Crayon on Construction Paper',
+      theme: 'The Crayon Period',
+      thumbnailPath: '/data/thumbnails/art-001.webp',
+      imagePath: '/data/images/art-001.jpg',
+      timestamp: 1712707200, // newer
+    },
+    {
+      id: 'art-002',
+      title: 'Torn Cardboard Sculpture',
+      medium: 'Cardboard and Glue',
+      theme: 'Domestic Destructionism',
+      thumbnailPath: '/data/thumbnails/art-002.webp',
+      imagePath: '/data/images/art-002.jpg',
+      timestamp: 1700000000, // older
+    },
+    {
+      id: 'art-003',
+      title: 'Crayon Drawing No. 2',
+      medium: 'Wax Crayon on Newsprint',
+      theme: 'The Crayon Period',
+      thumbnailPath: '/data/thumbnails/art-003.webp',
+      imagePath: '/data/images/art-003.jpg',
+      timestamp: 1710000000,
+    },
+  ];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Empty Collection Handling (totalCount === 0)', () => {
+    it('should render the global archival empty state when totalCount is 0 without crashing', () => {
+      const markup = renderToStaticMarkup(
+        React.createElement(CuratedGalleryCollection, { artworks: [] })
+      );
+
+      expect(markup).toContain('No Works Currently Cataloged');
+      expect(markup).toContain('Waiting for archival syncer ingestion');
+      // Should not render the filter bar when catalog is completely empty
+      expect(markup).not.toContain('role="tablist"');
+      expect(markup).not.toContain('Exhibition period filtering');
+    });
+  });
+
+  describe('Curated Collection with Artworks (totalCount > 0)', () => {
+    it('should render ExhibitionFilterBar and VirtualizedGalleryGrid with all artworks by default', () => {
+      const markup = renderToStaticMarkup(
+        React.createElement(CuratedGalleryCollection, { artworks: sampleArtworks })
+      );
+
+      // ExhibitionFilterBar should be present
+      expect(markup).toContain('Exhibition period filtering');
+      expect(markup).toContain('All Works (3)');
+      expect(markup).toContain('The Crayon Period (2)');
+      expect(markup).toContain('Domestic Destructionism (1)');
+
+      // VirtualizedGalleryGrid items should be rendered
+      expect(markup).toContain('Crayon Drawing No. 1');
+      expect(markup).toContain('Torn Cardboard Sculpture');
+      expect(markup).toContain('Crayon Drawing No. 2');
+    });
+
+    it('should call aggregateMovements and filterAndSortArtworks with correct arguments', () => {
+      const aggregateSpy = vi.spyOn(galleryFilterModule, 'aggregateMovements');
+      const filterSortSpy = vi.spyOn(galleryFilterModule, 'filterAndSortArtworks');
+
+      renderToStaticMarkup(
+        React.createElement(CuratedGalleryCollection, { artworks: sampleArtworks })
+      );
+
+      expect(aggregateSpy).toHaveBeenCalledWith(sampleArtworks);
+      expect(filterSortSpy).toHaveBeenCalledWith(sampleArtworks, null, 'desc');
+    });
+
+    it('should wire ExhibitionFilterBar callbacks to useGalleryFilter actions', () => {
+      const setMovementMock = vi.fn();
+      const setSortDirectionMock = vi.fn();
+
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: null,
+        sortDirection: 'desc',
+        setMovement: setMovementMock,
+        setSortDirection: setSortDirectionMock,
+        resetFilter: vi.fn(),
+      });
+
+      const tree = CuratedGalleryCollection({ artworks: sampleArtworks });
+      const filterBarEl = findElements(tree, (el) => el.type === ExhibitionFilterBar)[0];
+      expect(filterBarEl).toBeDefined();
+
+      filterBarEl.props.onSelectMovement('The Crayon Period');
+      expect(setMovementMock).toHaveBeenCalledWith('The Crayon Period');
+
+      filterBarEl.props.onToggleSort('asc');
+      expect(setSortDirectionMock).toHaveBeenCalledWith('asc');
+    });
+  });
+
+  describe('Filtering and Empty State Rendering', () => {
+    it('should filter artworks when selectedMovement is active', () => {
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: 'The Crayon Period',
+        sortDirection: 'desc',
+        setMovement: vi.fn(),
+        setSortDirection: vi.fn(),
+        resetFilter: vi.fn(),
+      });
+
+      const markup = renderToStaticMarkup(
+        React.createElement(CuratedGalleryCollection, { artworks: sampleArtworks })
+      );
+
+      // Only Crayon Period pieces should appear
+      expect(markup).toContain('Crayon Drawing No. 1');
+      expect(markup).toContain('Crayon Drawing No. 2');
+      expect(markup).not.toContain('Torn Cardboard Sculpture');
+    });
+
+    it('should render ExhibitionEmptyState when selected movement yields 0 filtered artworks', () => {
+      const resetFilterMock = vi.fn();
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: 'Monochrome Nihilism',
+        sortDirection: 'desc',
+        setMovement: vi.fn(),
+        setSortDirection: vi.fn(),
+        resetFilter: resetFilterMock,
+      });
+
+      const markup = renderToStaticMarkup(
+        React.createElement(CuratedGalleryCollection, { artworks: sampleArtworks })
+      );
+
+      // Filter bar remains visible
+      expect(markup).toContain('Exhibition period filtering');
+      // Empty state displays movement name and curatorial message
+      expect(markup).toContain('Monochrome Nihilism');
+      expect(markup).toContain('No works from this movement are currently on public exhibition.');
+      expect(markup).toContain('Return to All Works');
+    });
+
+    it('should trigger resetFilter when Return to All Works is clicked in empty state', () => {
+      const resetFilterMock = vi.fn();
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: 'Monochrome Nihilism',
+        sortDirection: 'desc',
+        setMovement: vi.fn(),
+        setSortDirection: vi.fn(),
+        resetFilter: resetFilterMock,
+      });
+
+      const tree = CuratedGalleryCollection({ artworks: sampleArtworks });
+      const emptyStateEl = findElements(tree, (el) => el.type === ExhibitionEmptyState)[0];
+      expect(emptyStateEl).toBeDefined();
+      expect(emptyStateEl.props.movementName).toBe('Monochrome Nihilism');
+
+      // Test invoking the prop directly
+      emptyStateEl.props.onReset();
+      expect(resetFilterMock).toHaveBeenCalledTimes(1);
+
+      // Test clicking the rendered button inside ExhibitionEmptyState
+      const renderedChild = ExhibitionEmptyState(emptyStateEl.props);
+      const buttons = findElements(renderedChild, (el) => el.type === 'button');
+      const resetBtn = buttons.find((btn) => {
+        const content = JSON.stringify(btn.props);
+        return content.includes('Return to All Works');
+      });
+
+      expect(resetBtn).toBeDefined();
+      resetBtn?.props.onClick?.({ preventDefault: () => {} });
+      expect(resetFilterMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Sorting Integration', () => {
+    it('should pass sortDirection="asc" to filterAndSortArtworks and render artworks sorted accordingly', () => {
+      const filterSortSpy = vi.spyOn(galleryFilterModule, 'filterAndSortArtworks');
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: null,
+        sortDirection: 'asc',
+        setMovement: vi.fn(),
+        setSortDirection: vi.fn(),
+        resetFilter: vi.fn(),
+      });
+
+      renderToStaticMarkup(
+        React.createElement(CuratedGalleryCollection, { artworks: sampleArtworks })
+      );
+
+      expect(filterSortSpy).toHaveBeenCalledWith(sampleArtworks, null, 'asc');
+    });
+  });
+});
