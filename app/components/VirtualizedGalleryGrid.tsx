@@ -14,6 +14,7 @@ export interface VirtualizedGalleryGridProps {
   endIndex?: number;
   initialScrollTop?: number;
   viewportHeight?: number;
+  onSelectArtwork?: (artwork: gallery.IArtwork, index: number, triggerEl: HTMLElement) => void;
 }
 
 /**
@@ -55,6 +56,7 @@ export default function VirtualizedGalleryGrid({
   endIndex: propEndIndex,
   initialScrollTop = 0,
   viewportHeight: propViewportHeight,
+  onSelectArtwork,
 }: VirtualizedGalleryGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -225,9 +227,20 @@ export default function VirtualizedGalleryGrid({
                   : 'grid-cols-4'
               }`}
             >
-              {row.map((artwork) => (
-                <ArtworkCard key={artwork.id} artwork={artwork} />
-              ))}
+              {row.map((artwork, colIndex) => {
+                const itemIndex = rowIndex * activeColumnCount + colIndex;
+                return (
+                  <ArtworkCard
+                    key={artwork.id}
+                    artwork={artwork}
+                    onSelect={
+                      onSelectArtwork
+                        ? (art, triggerEl) => onSelectArtwork(art, itemIndex, triggerEl)
+                        : undefined
+                    }
+                  />
+                );
+              })}
             </div>
           );
         })}

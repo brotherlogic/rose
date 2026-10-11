@@ -1,14 +1,32 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import CuratedGalleryCollection from '../app/components/CuratedGalleryCollection';
+import CuratedGalleryCollection, { CuratedGalleryCollectionProps } from '../app/components/CuratedGalleryCollection';
 import ExhibitionEmptyState from '../app/components/ExhibitionEmptyState';
 import ExhibitionFilterBar from '../app/components/ExhibitionFilterBar';
+import VirtualizedGalleryGrid from '../app/components/VirtualizedGalleryGrid';
+import ArtworkLightboxModal from '../app/components/ArtworkLightboxModal';
 import * as galleryFilterModule from '../lib/gallery-filter';
 import * as useGalleryFilterModule from '../app/hooks/useGalleryFilter';
+import * as useArtworkLightboxModule from '../app/hooks/useArtworkLightbox';
 import type { gallery } from '../lib/proto/gallery';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+// Helper to render CuratedGalleryCollection inside React SSR context and capture element tree
+function renderAndCapture(props: CuratedGalleryCollectionProps): React.ReactElement {
+  let captured: React.ReactElement | null = null;
+  function Wrapper() {
+    const el = CuratedGalleryCollection(props);
+    captured = el;
+    return el;
+  }
+  renderToStaticMarkup(React.createElement(Wrapper));
+  if (!captured) {
+    throw new Error('Failed to capture rendered element tree');
+  }
+  return captured;
+}
 
 // Helper to recursively find elements by predicate
 function findElements(node: React.ReactNode, predicate: (el: React.ReactElement) => boolean): React.ReactElement[] {
@@ -125,7 +143,7 @@ describe('CuratedGalleryCollection Container Component Suite (#278)', () => {
         resetFilter: vi.fn(),
       });
 
-      const tree = CuratedGalleryCollection({ artworks: sampleArtworks });
+      const tree = renderAndCapture({ artworks: sampleArtworks });
       const filterBarEl = findElements(tree, (el) => el.type === ExhibitionFilterBar)[0];
       expect(filterBarEl).toBeDefined();
 
@@ -189,7 +207,7 @@ describe('CuratedGalleryCollection Container Component Suite (#278)', () => {
         resetFilter: resetFilterMock,
       });
 
-      const tree = CuratedGalleryCollection({ artworks: sampleArtworks });
+      const tree = renderAndCapture({ artworks: sampleArtworks });
       const emptyStateEl = findElements(tree, (el) => el.type === ExhibitionEmptyState)[0];
       expect(emptyStateEl).toBeDefined();
       expect(emptyStateEl.props.movementName).toBe('Monochrome Nihilism');
@@ -230,4 +248,94 @@ describe('CuratedGalleryCollection Container Component Suite (#278)', () => {
       expect(filterSortSpy).toHaveBeenCalledWith(sampleArtworks, null, 'asc');
     });
   });
+
+  describe('Lightbox Integration Suite (#298)', () => {
+    it('should pass onSelectArtwork callback to VirtualizedGalleryGrid and not render modal initially', () => {
+      const tree = renderAndCapture({ artworks: sampleArtworks });
+      const gridEl = findElements(tree, (el) => el.type === VirtualizedGalleryGrid)[0];
+      expect(gridEl).toBeDefined();
+      expect(gridEl.props.onSelectArtwork).toBeDefined();
+      expect(typeof gridEl.props.onSelectArtwork).toBe('function');
+
+      const modalEl = findElements(tree, (el) => el.type === ArtworkLightboxModal)[0];
+      expect(modalEl).toBeUndefined();
+    });
+
+    it('should wire onSelectArtwork to openLightbox with index and trigger element', () => {
+      const openLightboxMock = vi.fn();
+      vi.spyOn(useArtworkLightboxModule, 'useArtworkLightbox').mockReturnValue({
+        activeIndex: null,
+        isPlaqueCollapsed: false,
+        triggerElementRef: { current: null },
+        openLightbox: openLightboxMock,
+        closeLightbox: vi.fn(),
+        nextArtwork: vi.fn(),
+        prevArtwork: vi.fn(),
+        togglePlaque: vi.fn(),
+      });
+
+      const tree = renderAndCapture({ artworks: sampleArtworks });
+      const gridEl = findElements(tree, (el) => el.type === VirtualizedGalleryGrid)[0];
+      expect(gridEl).toBeDefined();
+
+      const mockTrigger = { tagName: 'BUTTON' } as unknown as HTMLElement;
+      gridEl.props.onSelectArtwork(sampleArtworks[1], 1, mockTrigger);
+      expect(openLightboxMock).toHaveBeenCalledWith(1, mockTrigger);
+    });
+
+    it('should render ArtworkLightboxModal when activeIndex is set, passing correct props and callbacks', () => {
+      const closeLightboxMock = vi.fn();
+      const nextArtworkMock = vi.fn();
+      const prevArtworkMock = vi.fn();
+      const togglePlaqueMock = vi.fn();
+
+      vi.spyOn(useArtworkLightboxModule, 'useArtworkLightbox').mockReturnValue({
+        activeIndex: 1,
+        isPlaqueCollapsed: false,
+        triggerElementRef: { current: null },
+        openLightbox: vi.fn(),
+        closeLightbox: closeLightboxMock,
+        nextArtwork: nextArtworkMock,
+        prevArtwork: prevArtworkMock,
+        togglePlaque: togglePlaqueMock,
+      });
+
+      const tree = renderAndCapture({ artworks: sampleArtworks });
+      const modalEl = findElements(tree, (el) => el.type === ArtworkLightboxModal)[0];
+      expect(modalEl).toBeDefined();
+      expect(modalEl.props.artwork.id).toBe('art-003');
+      expect(modalEl.props.currentIndex).toBe(1);
+      expect(modalEl.props.totalCount).toBe(3);
+
+      modalEl.props.onNext();
+      expect(nextArtworkMock).toHaveBeenCalledTimes(1);
+
+      modalEl.props.onPrev();
+      expect(prevArtworkMock).toHaveBeenCalledTimes(1);
+
+      modalEl.props.onClose();
+      expect(closeLightboxMock).toHaveBeenCalledTimes(1);
+
+      modalEl.props.onTogglePlaque();
+      expect(togglePlaqueMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('should scope useArtworkLightbox strictly to the active filtered exhibition subset', () => {
+      const lightboxSpy = vi.spyOn(useArtworkLightboxModule, 'useArtworkLightbox');
+
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: 'The Crayon Period',
+        sortDirection: 'desc',
+        setMovement: vi.fn(),
+        setSortDirection: vi.fn(),
+        resetFilter: vi.fn(),
+      });
+
+      renderAndCapture({ artworks: sampleArtworks });
+
+      // Only art-001 and art-003 belong to The Crayon Period
+      expect(lightboxSpy).toHaveBeenCalledWith([sampleArtworks[0], sampleArtworks[2]]);
+    });
+  });
 });
+
