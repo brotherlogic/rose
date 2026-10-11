@@ -23,20 +23,15 @@ jobs:
           SUCCESS=0
           for i in $(seq 1 15); do
             echo "Healthcheck attempt $i/15..."
-            if response=$(curl -s -f http://localhost:8080/) && echo "$response" | grep -q "Artist Portfolio"; then
-              echo "Healthcheck passed: returned 200 OK with expected 'Artist Portfolio' content."
+            if curl -s -f http://localhost:8080/healthz > /dev/null; then
+              echo "Healthcheck passed: /healthz returned 200 OK."
               SUCCESS=1
               break
             fi
             sleep 2
           done
 
-          if [ "$SUCCESS" -eq 1 ]; then
-            echo "Container healthcheck successful. Stopping and removing container..."
-            docker stop test-gallery
-            docker rm test-gallery
-            exit 0
-          else
+          if [ "$SUCCESS" -ne 1 ]; then
             echo "Container healthcheck timed out or failed! Capturing container logs:"
             docker logs test-gallery || true
             echo "Stopping and removing container..."
@@ -44,3 +39,28 @@ jobs:
             docker rm test-gallery || true
             exit 1
           fi
+
+          echo "Validating root page branding..."
+          ROOT_HTML=$(curl -s -f http://localhost:8080/)
+          if ! echo "$ROOT_HTML" | grep -q "ROSE SERAPHINE TUCKER" || ! echo "$ROOT_HTML" | grep -q "The Permanent Collection"; then
+            echo "Branding verification failed! Root page content missing expected titles."
+            docker logs test-gallery || true
+            docker stop test-gallery || true
+            docker rm test-gallery || true
+            exit 1
+          fi
+
+          echo "Validating missing thumbnail returns 404..."
+          THUMB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/data/thumbnails/nonexistent.webp)
+          if [ "$THUMB_STATUS" -ne 404 ]; then
+            echo "Thumbnail 404 isolation failed: expected 404, got $THUMB_STATUS"
+            docker logs test-gallery || true
+            docker stop test-gallery || true
+            docker rm test-gallery || true
+            exit 1
+          fi
+
+          echo "Container healthcheck successful. Stopping and removing container..."
+          docker stop test-gallery
+          docker rm test-gallery
+          exit 0
