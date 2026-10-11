@@ -32,6 +32,17 @@ describe('Containerization Configuration', () => {
       expect(content).toMatch(/EXPOSE\s+80/);
       expect(content).toMatch(/CMD\s+\["nginx",\s*"-g",\s*"daemon off;"\]/);
     });
+
+    it('should create mount scaffolding directories for NFS media volumes', () => {
+      const content = fs.readFileSync(dockerfilePath, 'utf-8');
+      expect(content).toContain('RUN mkdir -p /data/images /data/thumbnails');
+    });
+
+    it('should configure native container HEALTHCHECK querying /healthz endpoint', () => {
+      const content = fs.readFileSync(dockerfilePath, 'utf-8');
+      expect(content).toMatch(/HEALTHCHECK\s+--interval=30s\s+--timeout=3s\s+--start-period=5s\s+--retries=3/);
+      expect(content).toMatch(/CMD\s+wget\s+-q\s+--spider\s+http:\/\/localhost\/healthz\s+\|\|\s+exit\s+1/);
+    });
   });
 
   describe('nginx.conf', () => {
