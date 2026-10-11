@@ -76,16 +76,17 @@ describe('Editorial Gallery & Museum Shell Integration Suite (#255)', () => {
       mockGetArtworks.mockReturnValue([]);
       const markup = renderToStaticMarkup(React.createElement(Home));
 
+      expect(markup).toContain('id="collection"');
       expect(markup).toContain('No Works Currently Cataloged');
       expect(markup).toMatch(/waiting for archival syncer ingestion/i);
     });
 
-    it('should render cataloged artworks when artworks are present', () => {
+    it('should render cataloged artworks in VirtualizedGalleryGrid when artworks are present', () => {
       mockGetArtworks.mockReturnValue([
         {
           id: 'artwork-001',
           title: 'Study in Crayon No. 4',
-          description: 'A primitive linear wax study on domestic surface.',
+          medium: 'Wax crayon on salvaged panel',
           imagePath: '/images/study-4.jpg',
         },
       ]);
@@ -93,8 +94,39 @@ describe('Editorial Gallery & Museum Shell Integration Suite (#255)', () => {
 
       expect(markup).not.toContain('No Works Currently Cataloged');
       expect(markup).toContain('Study in Crayon No. 4');
-      expect(markup).toContain('A primitive linear wax study on domestic surface.');
+      expect(markup).toContain('Wax crayon on salvaged panel');
       expect(markup).toContain('/images/study-4.jpg');
+      expect(markup).toContain('aspect-square');
+    });
+
+    it('should prioritize thumbnailPath over imagePath when present in loaded archive state', () => {
+      mockGetArtworks.mockReturnValue([
+        {
+          id: 'artwork-002',
+          title: 'Domestic Construction No. 2',
+          medium: 'Torn cardboard and adhesive',
+          thumbnailPath: '/data/thumbnails/artwork-002.webp',
+          imagePath: '/data/images/artwork-002.jpg',
+        },
+      ]);
+      const markup = renderToStaticMarkup(React.createElement(Home));
+
+      expect(markup).toContain('Domestic Construction No. 2');
+      expect(markup).toContain('Torn cardboard and adhesive');
+      expect(markup).toContain('/data/thumbnails/artwork-002.webp');
+    });
+
+    it('should fallback to placeholder.svg when thumbnail and image paths are absent', () => {
+      mockGetArtworks.mockReturnValue([
+        {
+          id: 'artwork-003',
+          title: 'Untitled Composition',
+        },
+      ]);
+      const markup = renderToStaticMarkup(React.createElement(Home));
+
+      expect(markup).toContain('Untitled Composition');
+      expect(markup).toContain('/placeholder.svg');
     });
   });
 

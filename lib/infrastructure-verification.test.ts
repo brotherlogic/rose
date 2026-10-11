@@ -13,6 +13,7 @@ interface ManifestDoc {
     annotations?: Record<string, string>;
     labels?: Record<string, string>;
   };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spec?: any;
 }
 
