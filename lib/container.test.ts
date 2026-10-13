@@ -92,6 +92,16 @@ describe('Containerization Configuration', () => {
       expect(content).toContain('try_files $uri =404;');
     });
 
+    it('should configure dedicated route for /data/catalog.json with no-cache and strict 404 isolation', () => {
+      const content = fs.readFileSync(nginxConfPath, 'utf-8');
+      expect(content).toMatch(/location\s*=\s*\/data\/catalog\.json\s*\{/);
+      expect(content).toContain('alias /data/catalog.json;');
+      expect(content).toContain('default_type application/json;');
+      expect(content).toContain('add_header Cache-Control "no-cache, must-revalidate";');
+      expect(content).toContain('add_header Access-Control-Allow-Origin "*";');
+      expect(content).toContain('try_files $uri =404;');
+    });
+
     it('should configure SPA routing fallback for static HTML pages', () => {
       const content = fs.readFileSync(nginxConfPath, 'utf-8');
       expect(content).toContain('try_files $uri $uri.html $uri/ /index.html =404;');
