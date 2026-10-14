@@ -1,6 +1,9 @@
 package storage
 
 import (
+	"bytes"
+	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1040,6 +1043,257 @@ func TestSaveSyncStateAtomic(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateCatalog_EmptyDirectory(t *testing.T) {
+	var nilStore *Store
+	if err := nilStore.GenerateCatalog(); err == nil {
+		t.Errorf("expected error for nil store, got nil")
+	}
+
+	tempDir := t.TempDir()
+	nestedDir := filepath.Join(tempDir, "nested", "empty")
+	store := NewStore(nestedDir)
+
+	if err := store.GenerateCatalog(); err != nil {
+		t.Fatalf("expected GenerateCatalog on empty directory to succeed, got: %v", err)
+	}
+
+	catalogPath := filepath.Join(nestedDir, "catalog.json")
+	data, err := os.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatalf("failed to read generated catalog.json: %v", err)
+	}
+
+	if strings.TrimSpace(string(data)) != "[]" {
+		t.Errorf("expected empty catalog to serialize as \"[]\", got %q", string(data))
+	}
+}
+
+func TestGenerateCatalog_AggregationSortingAndAllFields(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	artworks := []*gallerypb.Artwork{
+		{
+			Id:            "art-b",
+			Title:         "Tie Timestamp B",
+			Description:   "Second in tie-break",
+			ThemeId:       "abstract",
+			Timestamp:     1700000200,
+			ImagePath:     "images/art-b.jpg",
+			ThumbnailPath: "thumbnails/art-b.webp",
+			Medium:        "Acrylic on canvas",
+		},
+		{
+			Id:            "art-oldest",
+			Title:         "Minimalist Empty Optionals",
+			Description:   "",
+			ThemeId:       "minimalism",
+			Timestamp:     1700000100,
+			ImagePath:     "images/art-oldest.jpg",
+			ThumbnailPath: "thumbnails/art-oldest.webp",
+			Medium:        "",
+		},
+		{
+			Id:            "art-a",
+			Title:         "Tie Timestamp A",
+			Description:   "First in tie-break",
+			ThemeId:       "abstract",
+			Timestamp:     1700000200,
+			ImagePath:     "images/art-a.jpg",
+			ThumbnailPath: "thumbnails/art-a.webp",
+			Medium:        "Oil on linen",
+		},
+		{
+			Id:            "art-newest",
+			Title:         "Newest Piece",
+			Description:   "Latest addition",
+			ThemeId:       "expressionism",
+			Timestamp:     1700000300,
+			ImagePath:     "images/art-newest.jpg",
+			ThumbnailPath: "thumbnails/art-newest.webp",
+			Medium:        "Mixed media",
+		},
+	}
+
+	for _, art := range artworks {
+		pbBytes, err := proto.Marshal(art)
+		if err != nil {
+			t.Fatalf("failed to marshal artwork %s: %v", art.GetId(), err)
+		}
+		if err := store.WriteArtworkProtoAtomic(art.GetId(), pbBytes); err != nil {
+			t.Fatalf("failed to write artwork proto %s: %v", art.GetId(), err)
+		}
+	}
+
+	// Add noise entries that should be ignored: hidden file, temp file, and directory ending in .proto.bin
+	if err := os.WriteFile(filepath.Join(tempDir, ".hidden.proto.bin"), []byte("hidden"), 0644); err != nil {
+		t.Fatalf("failed to write hidden file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "art.proto.bin.tmp-123"), []byte("tmp"), 0644); err != nil {
+		t.Fatalf("failed to write tmp file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tempDir, "subdir.proto.bin"), 0755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
+
+	if err := store.GenerateCatalog(); err != nil {
+		t.Fatalf("GenerateCatalog failed: %v", err)
+	}
+
+	catalogBytes, err := os.ReadFile(filepath.Join(tempDir, "catalog.json"))
+	if err != nil {
+		t.Fatalf("failed to read catalog.json: %v", err)
+	}
+
+	var parsed []CatalogArtwork
+	if err := json.Unmarshal(catalogBytes, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal catalog.json into []CatalogArtwork: %v", err)
+	}
+
+	expectedOrder := []string{"art-newest", "art-a", "art-b", "art-oldest"}
+	if len(parsed) != len(expectedOrder) {
+		t.Fatalf("expected %d artworks in catalog, got %d", len(expectedOrder), len(parsed))
+	}
+	for i, wantID := range expectedOrder {
+		if parsed[i].ID != wantID {
+			t.Errorf("index %d: expected ID %q, got %q", i, wantID, parsed[i].ID)
+		}
+	}
+
+	// Verify all 8 snake_case keys are explicitly present in raw JSON maps, even when empty
+	var rawMaps []map[string]interface{}
+	if err := json.Unmarshal(catalogBytes, &rawMaps); err != nil {
+		t.Fatalf("failed to unmarshal catalog.json into raw maps: %v", err)
+	}
+	requiredKeys := []string{
+		"id",
+		"title",
+		"description",
+		"theme_id",
+		"timestamp",
+		"image_path",
+		"thumbnail_path",
+		"medium",
+	}
+	for idx, itemMap := range rawMaps {
+		for _, key := range requiredKeys {
+			if _, exists := itemMap[key]; !exists {
+				t.Errorf("artwork at index %d (id=%v) is missing required JSON key %q", idx, itemMap["id"], key)
+			}
+		}
+	}
+}
+
+func TestGenerateCatalog_SkipsCorruptedProto(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	validArt := &gallerypb.Artwork{
+		Id:            "valid-art-1",
+		Title:         "Valid Artwork",
+		Description:   "Valid description",
+		ThemeId:       "classic",
+		Timestamp:     1700000500,
+		ImagePath:     "images/valid-art-1.jpg",
+		ThumbnailPath: "thumbnails/valid-art-1.webp",
+		Medium:        "Watercolor",
+	}
+	pbBytes, err := proto.Marshal(validArt)
+	if err != nil {
+		t.Fatalf("failed to marshal valid artwork: %v", err)
+	}
+	if err := store.WriteArtworkProtoAtomic(validArt.GetId(), pbBytes); err != nil {
+		t.Fatalf("failed to write valid artwork proto: %v", err)
+	}
+
+	// Write corrupted .proto.bin file
+	corruptPath := filepath.Join(tempDir, "corrupt-art.proto.bin")
+	if err := os.WriteFile(corruptPath, []byte{0xFF, 0xFE, 0xFD, 0x00, 0x01}, 0644); err != nil {
+		t.Fatalf("failed to write corrupt proto file: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	origOutput := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(origOutput)
+
+	if err := store.GenerateCatalog(); err != nil {
+		t.Fatalf("expected GenerateCatalog to succeed despite corrupt proto, got: %v", err)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "warning: skipping corrupt artwork proto corrupt-art.proto.bin:") {
+		t.Errorf("expected warning log for corrupt proto, got log: %q", logOutput)
+	}
+
+	catalogBytes, err := os.ReadFile(filepath.Join(tempDir, "catalog.json"))
+	if err != nil {
+		t.Fatalf("failed to read catalog.json: %v", err)
+	}
+
+	var parsed []CatalogArtwork
+	if err := json.Unmarshal(catalogBytes, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal catalog.json: %v", err)
+	}
+
+	if len(parsed) != 1 || parsed[0].ID != "valid-art-1" {
+		t.Errorf("expected only valid-art-1 in catalog, got %+v", parsed)
+	}
+}
+
+func TestGenerateCatalog_AtomicWriteLeavesNoTmpFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	art := &gallerypb.Artwork{
+		Id:        "atomic-art-1",
+		Title:     "Atomic Check",
+		Timestamp: 1700000900,
+	}
+	pbBytes, err := proto.Marshal(art)
+	if err != nil {
+		t.Fatalf("failed to marshal artwork: %v", err)
+	}
+	if err := store.WriteArtworkProtoAtomic(art.GetId(), pbBytes); err != nil {
+		t.Fatalf("failed to write artwork proto: %v", err)
+	}
+
+	if err := store.GenerateCatalog(); err != nil {
+		t.Fatalf("GenerateCatalog failed: %v", err)
+	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("failed to read tempDir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp") {
+			t.Errorf("found leftover temporary file after GenerateCatalog: %s", entry.Name())
+		}
+	}
+
+	// Also verify cleanup when os.Rename onto catalog.json fails (e.g., catalog.json is a non-empty directory)
+	failDir := filepath.Join(tempDir, "fail-rename")
+	if err := os.MkdirAll(filepath.Join(failDir, "catalog.json", "nested"), 0755); err != nil {
+		t.Fatalf("failed to create colliding catalog.json directory: %v", err)
+	}
+	failStore := NewStore(failDir)
+	if err := failStore.GenerateCatalog(); err == nil {
+		t.Fatalf("expected GenerateCatalog to fail when catalog.json is a non-empty directory")
+	}
+
+	failEntries, err := os.ReadDir(failDir)
+	if err != nil {
+		t.Fatalf("failed to read failDir: %v", err)
+	}
+	for _, entry := range failEntries {
+		if strings.Contains(entry.Name(), ".tmp") {
+			t.Errorf("found leftover temporary file after failed GenerateCatalog: %s", entry.Name())
+		}
+	}
+}
+
 
 
 

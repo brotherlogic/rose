@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,17 @@ import (
 
 type Store struct {
 	BasePath string
+}
+
+type CatalogArtwork struct {
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	Description   string `json:"description"`
+	ThemeID       string `json:"theme_id"`
+	Timestamp     int64  `json:"timestamp"`
+	ImagePath     string `json:"image_path"`
+	ThumbnailPath string `json:"thumbnail_path"`
+	Medium        string `json:"medium"`
 }
 
 func NewStore(basePath string) *Store {
@@ -369,7 +381,106 @@ func (s *Store) FindUnannotatedPhotos() ([]BackfillCandidate, error) {
 	return candidates, nil
 }
 
+// GenerateCatalog scans all processed artwork protobuf metadata files in s.BasePath,
+// sorts them reverse-chronologically (with deterministic ID tie-breaking), and atomically
+// writes catalog.json in s.BasePath.
+func (s *Store) GenerateCatalog() error {
+	if s == nil {
+		return fmt.Errorf("nil store")
+	}
+	if err := os.MkdirAll(s.BasePath, 0755); err != nil {
+		return err
+	}
 
+	entries, err := os.ReadDir(s.BasePath)
+	if err != nil {
+		return err
+	}
 
+	artworks := make([]CatalogArtwork, 0)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			// Fallback check via entry.Info() in case DirEntry type is unknown on certain filesystems
+			if entry.IsDir() {
+				continue
+			}
+			info, infoErr := entry.Info()
+			if infoErr != nil || !info.Mode().IsRegular() {
+				continue
+			}
+		}
+		if strings.HasPrefix(name, ".") || strings.Contains(name, ".tmp") || !strings.HasSuffix(name, ".proto.bin") {
+			continue
+		}
 
+		filePath := filepath.Join(s.BasePath, name)
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			log.Printf("warning: skipping corrupt artwork proto %s: %v", name, err)
+			continue
+		}
 
+		var pb gallerypb.Artwork
+		if err := proto.Unmarshal(data, &pb); err != nil {
+			log.Printf("warning: skipping corrupt artwork proto %s: %v", name, err)
+			continue
+		}
+
+		artworks = append(artworks, CatalogArtwork{
+			ID:            pb.GetId(),
+			Title:         pb.GetTitle(),
+			Description:   pb.GetDescription(),
+			ThemeID:       pb.GetThemeId(),
+			Timestamp:     pb.GetTimestamp(),
+			ImagePath:     pb.GetImagePath(),
+			ThumbnailPath: pb.GetThumbnailPath(),
+			Medium:        pb.GetMedium(),
+		})
+	}
+
+	sort.Slice(artworks, func(i, j int) bool {
+		if artworks[i].Timestamp != artworks[j].Timestamp {
+			return artworks[i].Timestamp > artworks[j].Timestamp
+		}
+		return artworks[i].ID < artworks[j].ID
+	})
+
+	payload, err := json.MarshalIndent(artworks, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmpPath := filepath.Join(s.BasePath, fmt.Sprintf(".catalog.json.tmp-%d", time.Now().UnixNano()))
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return err
+	}
+
+	cleanUp := true
+	defer func() {
+		if cleanUp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := f.Write(payload); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	destPath := filepath.Join(s.BasePath, "catalog.json")
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return err
+	}
+
+	cleanUp = false
+	return nil
+}
