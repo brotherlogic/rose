@@ -507,6 +507,22 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		if err != nil {
 			if isRateLimitError(err) {
 				log.Printf("Rate limit encountered during vision analysis for %s: %v, exiting gracefully", photo.ID, err)
+				if store != nil {
+					if err := store.GenerateCatalog(); err != nil {
+						m.IncSyncErrors()
+						log.Printf("Error generating catalog.json: %v", err)
+						reportFailure(reporter, github.FailureReport{
+							Stage:            "Storage Persistence",
+							Timestamp:        time.Now().UTC(),
+							Error:            err,
+							PhotosFetched:    fetchedCount,
+							PhotosAttempted:  attemptedCount,
+							PhotosSuccessful: successCount,
+							LogSummary:       fmt.Sprintf("error generating catalog.json: %v", err),
+						})
+						return 1
+					}
+				}
 				return 0
 			}
 			m.IncAnnotationErrors()
@@ -673,6 +689,22 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			if err != nil {
 				if isRateLimitError(err) {
 					log.Printf("Rate limit encountered during backfill vision analysis for %s: %v, exiting gracefully", candidate.ID, err)
+					if store != nil {
+						if err := store.GenerateCatalog(); err != nil {
+							m.IncSyncErrors()
+							log.Printf("Error generating catalog.json: %v", err)
+							reportFailure(reporter, github.FailureReport{
+								Stage:            "Storage Persistence",
+								Timestamp:        time.Now().UTC(),
+								Error:            err,
+								PhotosFetched:    fetchedCount,
+								PhotosAttempted:  attemptedCount,
+								PhotosSuccessful: successCount,
+								LogSummary:       fmt.Sprintf("error generating catalog.json: %v", err),
+							})
+							return 1
+						}
+					}
 					return 0
 				}
 				m.IncAnnotationErrors()
@@ -728,6 +760,23 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		}
 	}
 	log.Printf("Backfill phase completed: %d photo(s) annotated", backfillAnnotationsCount)
+
+	if store != nil {
+		if err := store.GenerateCatalog(); err != nil {
+			m.IncSyncErrors()
+			log.Printf("Error generating catalog.json: %v", err)
+			reportFailure(reporter, github.FailureReport{
+				Stage:            "Storage Persistence",
+				Timestamp:        time.Now().UTC(),
+				Error:            err,
+				PhotosFetched:    fetchedCount,
+				PhotosAttempted:  attemptedCount,
+				PhotosSuccessful: successCount,
+				LogSummary:       fmt.Sprintf("error generating catalog.json: %v", err),
+			})
+			return 1
+		}
+	}
 
 	if errorCount > 0 {
 		log.Printf("Syncer completed with %d error(s)", errorCount)
