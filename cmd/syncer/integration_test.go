@@ -235,6 +235,24 @@ AF_initDataCallback({
 		t.Errorf("expected photo-e2e-1 and photo-e2e-2 in sync state, got: %+v", stateMap)
 	}
 
+	// 3.5. Verify catalog.json generated at the end of sync execution
+	catalogPath := filepath.Join(tempDir, "catalog.json")
+	catalogBytes, err := os.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatalf("failed to read catalog.json: %v", err)
+	}
+	var catalogArtworks []storage.CatalogArtwork
+	if err := json.Unmarshal(catalogBytes, &catalogArtworks); err != nil {
+		t.Fatalf("failed to parse catalog.json: %v", err)
+	}
+	if len(catalogArtworks) != 2 {
+		t.Fatalf("expected 2 artworks in catalog.json, got %d", len(catalogArtworks))
+	}
+	if catalogArtworks[0].Timestamp < catalogArtworks[1].Timestamp {
+		t.Errorf("expected catalog.json artworks in reverse-chronological order, got timestamps %d and %d",
+			catalogArtworks[0].Timestamp, catalogArtworks[1].Timestamp)
+	}
+
 	// 4. Verify Idempotency (Second Pass)
 	pass2ExitCode := Run(context.Background(), albumURL, tempDir, photoSvc, visionSvc, store, mockReporter, m)
 	if pass2ExitCode != 0 {

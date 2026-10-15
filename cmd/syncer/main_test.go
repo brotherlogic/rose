@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -2719,6 +2720,222 @@ func TestRun_Backfill_PhotosInAlbumAndSyncState_MissingProto(t *testing.T) {
 		t.Errorf("expected rose_syncer_artworks_annotated_total to be 2, got %f", artworksAnnotatedVal)
 	}
 }
+
+func TestRun_CatalogGeneration_NewAndBackfillReverseChronological(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	// Pre-populate an older photo for backfill (timestamp 1700000000)
+	backfillID := "photo-backfill-older"
+	if err := store.WriteImage(backfillID, rawJPEG); err != nil {
+		t.Fatal(err)
+	}
+	olderTime := time.Unix(1700000000, 0)
+	if err := os.Chtimes(filepath.Join(tempDir, "images", backfillID+".jpg"), olderTime, olderTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveProcessedPhoto(backfillID); err != nil {
+		t.Fatal(err)
+	}
+
+	// New photo ingested in Phase 1 (will receive current timestamp > 1700000000)
+	newID := "photo-new-recent"
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: newID, DownloadURL: "https://photos.google.com/" + newID},
+		},
+		downloadedData: rawJPEG,
+	}
+
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			return &vision.AnalysisResult{
+				Title:       "Curated Piece",
+				Medium:      "Oil on Canvas",
+				Description: "Detailed brushwork",
+				Theme:       "Impressionism",
+			}, nil
+		},
+	}
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, nil, 5)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	catalogPath := filepath.Join(tempDir, "catalog.json")
+	data, err := os.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatalf("expected catalog.json to be generated at %s, got error: %v", catalogPath, err)
+	}
+
+	var catalog []storage.CatalogArtwork
+	if err := json.Unmarshal(data, &catalog); err != nil {
+		t.Fatalf("failed to unmarshal catalog.json: %v", err)
+	}
+
+	if len(catalog) != 2 {
+		t.Fatalf("expected 2 artworks in catalog.json, got %d", len(catalog))
+	}
+
+	// Newer photo (Phase 1) must appear first, older backfilled photo (Phase 2) second
+	if catalog[0].ID != newID {
+		t.Errorf("expected first catalog entry to be %s, got %s", newID, catalog[0].ID)
+	}
+	if catalog[1].ID != backfillID {
+		t.Errorf("expected second catalog entry to be %s, got %s", backfillID, catalog[1].ID)
+	}
+	if catalog[0].Timestamp <= catalog[1].Timestamp {
+		t.Errorf("expected reverse-chronological order (%d > %d)", catalog[0].Timestamp, catalog[1].Timestamp)
+	}
+}
+
+func TestRun_CatalogGeneration_RateLimitGracefulExit(t *testing.T) {
+	t.Run("Phase1RateLimitRefreshesCatalog", func(t *testing.T) {
+		tempDir := t.TempDir()
+		store := storage.NewStore(tempDir)
+		rawJPEG := createTestJPEG(100, 100)
+
+		photoSvc := &mockPhotoService{
+			photos: []photos.Photo{
+				{ID: "p1-ok", DownloadURL: "https://photos.google.com/p1-ok"},
+				{ID: "p2-ratelimited", DownloadURL: "https://photos.google.com/p2-ratelimited"},
+			},
+			downloadedData: rawJPEG,
+		}
+
+		calls := 0
+		visionSvc := &mockVisionService{
+			analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+				calls++
+				if calls == 2 {
+					return nil, errors.New("HTTP 429: rate limit exceeded")
+				}
+				return &vision.AnalysisResult{
+					Title:       "First Photo",
+					Medium:      "Watercolor",
+					Description: "Completed before rate limit",
+					Theme:       "Modernism",
+				}, nil
+			},
+		}
+
+		exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, nil, 5)
+		if exitCode != 0 {
+			t.Fatalf("expected graceful exit code 0 on Phase 1 vision rate limit, got %d", exitCode)
+		}
+
+		catalogBytes, err := os.ReadFile(filepath.Join(tempDir, "catalog.json"))
+		if err != nil {
+			t.Fatalf("expected catalog.json to be generated on Phase 1 rate-limit exit: %v", err)
+		}
+		var catalog []storage.CatalogArtwork
+		if err := json.Unmarshal(catalogBytes, &catalog); err != nil {
+			t.Fatalf("failed to unmarshal catalog.json: %v", err)
+		}
+		if len(catalog) != 1 || catalog[0].ID != "p1-ok" {
+			t.Errorf("expected catalog.json to contain p1-ok, got %+v", catalog)
+		}
+	})
+
+	t.Run("Phase2RateLimitRefreshesCatalog", func(t *testing.T) {
+		tempDir := t.TempDir()
+		store := storage.NewStore(tempDir)
+		rawJPEG := createTestJPEG(100, 100)
+
+		// Pre-populate 2 backfill candidates
+		for i, id := range []string{"bf-1", "bf-2"} {
+			if err := store.WriteImage(id, rawJPEG); err != nil {
+				t.Fatal(err)
+			}
+			ts := time.Unix(int64(1700000000+i*100), 0)
+			if err := os.Chtimes(filepath.Join(tempDir, "images", id+".jpg"), ts, ts); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SaveProcessedPhoto(id); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		photoSvc := &mockPhotoService{photos: []photos.Photo{}}
+		calls := 0
+		visionSvc := &mockVisionService{
+			analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+				calls++
+				if calls == 2 {
+					return nil, errors.New("HTTP 429: rate limit exceeded")
+				}
+				return &vision.AnalysisResult{
+					Title:       "Backfilled First",
+					Medium:      "Charcoal",
+					Description: "Annotated before Phase 2 rate limit",
+					Theme:       "Realism",
+				}, nil
+			},
+		}
+
+		exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, nil, 5)
+		if exitCode != 0 {
+			t.Fatalf("expected graceful exit code 0 on Phase 2 vision rate limit, got %d", exitCode)
+		}
+
+		catalogBytes, err := os.ReadFile(filepath.Join(tempDir, "catalog.json"))
+		if err != nil {
+			t.Fatalf("expected catalog.json to be generated on Phase 2 rate-limit exit: %v", err)
+		}
+		var catalog []storage.CatalogArtwork
+		if err := json.Unmarshal(catalogBytes, &catalog); err != nil {
+			t.Fatalf("failed to unmarshal catalog.json: %v", err)
+		}
+		if len(catalog) != 1 || catalog[0].ID != "bf-1" {
+			t.Errorf("expected catalog.json to contain bf-1, got %+v", catalog)
+		}
+	})
+}
+
+func TestRun_CatalogGeneration_FailureReportsIssueAndExits1(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	// Make catalog.json a non-empty directory so os.Rename onto catalog.json fails
+	badCatalogDir := filepath.Join(tempDir, "catalog.json")
+	if err := os.MkdirAll(filepath.Join(badCatalogDir, "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "p1", DownloadURL: "https://photos.google.com/p1"},
+		},
+		downloadedData: rawJPEG,
+	}
+	visionSvc := &mockVisionService{}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, m, 5)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 when GenerateCatalog fails, got %d", exitCode)
+	}
+
+	if reporter.createCalls.Load() != 1 {
+		t.Fatalf("expected 1 failure issue created, got %d", reporter.createCalls.Load())
+	}
+	if reporter.lastReport.Stage != "Storage Persistence" {
+		t.Errorf("expected stage 'Storage Persistence', got %q", reporter.lastReport.Stage)
+	}
+	if !strings.Contains(reporter.lastReport.LogSummary, "error generating catalog.json") {
+		t.Errorf("expected LogSummary to contain 'error generating catalog.json', got %q", reporter.lastReport.LogSummary)
+	}
+
+	values, _ := gatherMetricValues(t, m)
+	if values["rose_syncer_sync_errors_total"] < 1 {
+		t.Errorf("expected rose_syncer_sync_errors_total >= 1, got %f", values["rose_syncer_sync_errors_total"])
+	}
+}
+
 
 
 
