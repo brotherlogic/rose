@@ -9,6 +9,7 @@ import ArtworkLightboxModal from '../app/components/ArtworkLightboxModal';
 import * as galleryFilterModule from '../lib/gallery-filter';
 import * as useGalleryFilterModule from '../app/hooks/useGalleryFilter';
 import * as useArtworkLightboxModule from '../app/hooks/useArtworkLightbox';
+import * as useGalleryCatalogModule from '../app/hooks/useGalleryCatalog';
 import type { gallery } from '../lib/proto/gallery';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -337,5 +338,93 @@ describe('CuratedGalleryCollection Container Component Suite (#278)', () => {
       expect(lightboxSpy).toHaveBeenCalledWith([sampleArtworks[0], sampleArtworks[2]]);
     });
   });
+
+  describe('Dynamic Catalog Hydration Suite (#345)', () => {
+    const hydratedArtworks: gallery.IArtwork[] = [
+      ...sampleArtworks,
+      {
+        id: 'art-004',
+        title: 'Midnight Fingerpaint Study',
+        medium: 'Tempera on Plaster',
+        themeId: 'Kinetic Scribblism',
+        thumbnailPath: '/data/thumbnails/art-004.webp',
+        imagePath: '/data/images/art-004.jpg',
+        timestamp: 1720000000,
+      },
+    ];
+
+    it('should pass the initial artworks prop into useGalleryCatalog', () => {
+      const catalogSpy = vi.spyOn(useGalleryCatalogModule, 'useGalleryCatalog');
+
+      renderToStaticMarkup(
+        React.createElement(CuratedGalleryCollection, { artworks: sampleArtworks })
+      );
+
+      expect(catalogSpy).toHaveBeenCalledWith(sampleArtworks);
+    });
+
+    it('should dynamically update ExhibitionFilterBar movement counts, VirtualizedGalleryGrid items, and ArtworkLightboxModal navigation when useGalleryCatalog returns hydrated artworks', () => {
+      vi.spyOn(useGalleryCatalogModule, 'useGalleryCatalog').mockReturnValue({
+        artworks: hydratedArtworks,
+        isHydrated: true,
+      });
+
+      const lightboxSpy = vi.spyOn(useArtworkLightboxModule, 'useArtworkLightbox').mockReturnValue({
+        activeIndex: 0,
+        isPlaqueCollapsed: false,
+        triggerElementRef: { current: null },
+        openLightbox: vi.fn(),
+        closeLightbox: vi.fn(),
+        nextArtwork: vi.fn(),
+        prevArtwork: vi.fn(),
+        togglePlaque: vi.fn(),
+      });
+
+      // Pass only a single initial static artwork while useGalleryCatalog returns 4 hydrated artworks
+      const tree = renderAndCapture({ artworks: [sampleArtworks[0]] });
+
+      const filterBarEl = findElements(tree, (el) => el.type === ExhibitionFilterBar)[0];
+      expect(filterBarEl).toBeDefined();
+      expect(filterBarEl.props.totalCount).toBe(4);
+      expect(filterBarEl.props.movements).toEqual([
+        { name: 'The Crayon Period', count: 2 },
+        { name: 'Domestic Destructionism', count: 1 },
+        { name: 'Kinetic Scribblism', count: 1 },
+      ]);
+
+      const gridEl = findElements(tree, (el) => el.type === VirtualizedGalleryGrid)[0];
+      expect(gridEl).toBeDefined();
+      expect(gridEl.props.artworks).toHaveLength(4);
+      expect(gridEl.props.artworks[0].id).toBe('art-004');
+
+      expect(lightboxSpy).toHaveBeenCalledWith(gridEl.props.artworks);
+
+      const modalEl = findElements(tree, (el) => el.type === ArtworkLightboxModal)[0];
+      expect(modalEl).toBeDefined();
+      expect(modalEl.props.artwork.id).toBe('art-004');
+      expect(modalEl.props.totalCount).toBe(4);
+    });
+
+    it('should transition from an empty initial static baseline to a populated dynamic catalog when useGalleryCatalog hydrates', () => {
+      vi.spyOn(useGalleryCatalogModule, 'useGalleryCatalog').mockReturnValue({
+        artworks: sampleArtworks,
+        isHydrated: true,
+      });
+
+      const markup = renderToStaticMarkup(
+        React.createElement(CuratedGalleryCollection, { artworks: [] })
+      );
+
+      expect(markup).not.toContain('No Works Currently Cataloged');
+      expect(markup).toContain('Exhibition period filtering');
+      expect(markup).toContain('All Works (3)');
+      expect(markup).toContain('The Crayon Period (2)');
+      expect(markup).toContain('Domestic Destructionism (1)');
+      expect(markup).toContain('Crayon Drawing No. 1');
+      expect(markup).toContain('Torn Cardboard Sculpture');
+      expect(markup).toContain('Crayon Drawing No. 2');
+    });
+  });
 });
+
 
