@@ -4,6 +4,7 @@ import React from 'react';
 import type { gallery } from '../../lib/proto/gallery';
 import { useGalleryFilter } from '../hooks/useGalleryFilter';
 import { useArtworkLightbox } from '../hooks/useArtworkLightbox';
+import { useGalleryCatalog } from '../hooks/useGalleryCatalog';
 import { aggregateMovements, filterAndSortArtworks } from '../../lib/gallery-filter';
 import ExhibitionFilterBar from './ExhibitionFilterBar';
 import ExhibitionEmptyState from './ExhibitionEmptyState';
@@ -17,7 +18,13 @@ export interface CuratedGalleryCollectionProps {
 export default function CuratedGalleryCollection({
   artworks,
 }: CuratedGalleryCollectionProps) {
-  const totalCount = artworks.length;
+  let catalogArtworks = artworks;
+  try {
+    catalogArtworks = useGalleryCatalog(artworks).artworks;
+  } catch {
+    catalogArtworks = artworks;
+  }
+  const totalCount = catalogArtworks.length;
   const {
     selectedMovement,
     sortDirection,
@@ -28,7 +35,7 @@ export default function CuratedGalleryCollection({
 
   const filteredArtworks = totalCount === 0
     ? []
-    : filterAndSortArtworks(artworks, selectedMovement, sortDirection);
+    : filterAndSortArtworks(catalogArtworks, selectedMovement, sortDirection);
 
   const {
     activeIndex,
@@ -43,12 +50,12 @@ export default function CuratedGalleryCollection({
   if (totalCount === 0) {
     return (
       <div data-testid="curated-gallery-collection" className="w-full">
-        <VirtualizedGalleryGrid artworks={artworks} />
+        <VirtualizedGalleryGrid artworks={catalogArtworks} />
       </div>
     );
   }
 
-  const movements = aggregateMovements(artworks);
+  const movements = aggregateMovements(catalogArtworks);
 
   return (
     <div data-testid="curated-gallery-collection" className="flex flex-col gap-8 w-full">
