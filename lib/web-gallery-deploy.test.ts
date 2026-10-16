@@ -29,6 +29,9 @@ interface K8sResource {
         labels?: Record<string, string>;
       };
       spec?: {
+        securityContext?: {
+          fsGroup?: number;
+        };
         containers?: Array<{
           name: string;
           image: string;
@@ -46,6 +49,17 @@ interface K8sResource {
           resources?: {
             requests?: { cpu: string; memory: string };
             limits?: { cpu: string; memory: string };
+          };
+          volumeMounts?: Array<{
+            name: string;
+            mountPath: string;
+            readOnly?: boolean;
+          }>;
+        }>;
+        volumes?: Array<{
+          name: string;
+          persistentVolumeClaim?: {
+            claimName: string;
           };
         }>;
       };
@@ -101,6 +115,7 @@ describe('Rose Web Gallery Deployment and Service Manifests Turnup Specification
       expect(deploymentDoc.spec.strategy?.type).toBe('RollingUpdate');
       expect(deploymentDoc.spec.strategy?.rollingUpdate?.maxSurge).toBe(1);
       expect(deploymentDoc.spec.strategy?.rollingUpdate?.maxUnavailable).toBe(0);
+      expect(deploymentDoc.spec?.template?.spec?.securityContext).toEqual({ fsGroup: 65532 });
 
       const container = deploymentDoc.spec.template.spec.containers[0];
       expect(container.name).toBe('rose-gallery');
@@ -135,6 +150,16 @@ describe('Rose Web Gallery Deployment and Service Manifests Turnup Specification
           memory: '256Mi',
         },
       });
+
+      expect(container.volumeMounts).toEqual([
+        { name: 'rose-data', mountPath: '/data', readOnly: true },
+      ]);
+      expect(deploymentDoc.spec?.template?.spec?.volumes).toEqual([
+        { name: 'rose-data', persistentVolumeClaim: { claimName: 'rose-data-pvc' } },
+      ]);
+      expect(container.volumeMounts?.[0]?.name).toBe(
+        deploymentDoc.spec?.template?.spec?.volumes?.[0]?.name
+      );
     });
   });
 
@@ -142,10 +167,13 @@ describe('Rose Web Gallery Deployment and Service Manifests Turnup Specification
     it('should cross-reference brotherlogic/prod#974 and parent issues in deploy/rose-gallery-deploy.yaml', () => {
       const content = fs.readFileSync(manifestPath, 'utf-8');
       expect(content).toContain('brotherlogic/prod#974');
+      expect(content).toContain('brotherlogic/prod#1026');
       expect(content).toContain('brotherlogic/rose#30');
       expect(content).toContain('brotherlogic/rose#63');
       expect(content).toContain('brotherlogic/rose#64');
       expect(content).toContain('brotherlogic/rose#65');
+      expect(content).toContain('brotherlogic/rose#312');
+      expect(content).toContain('brotherlogic/rose#350');
     });
 
     it('should include the Flux image policy comment marker for automated updates', () => {
