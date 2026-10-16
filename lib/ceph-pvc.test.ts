@@ -38,10 +38,10 @@ describe('Ceph PersistentVolumeClaim Turnup Specification (#57)', () => {
       expect(parsed.apiVersion).toBe('v1');
       expect(parsed.kind).toBe('PersistentVolumeClaim');
       expect(parsed.metadata?.name).toBe('rose-data-pvc');
-      expect(parsed.metadata?.namespace).toBe('default');
-      expect(parsed.spec?.accessModes).toContain('ReadWriteOnce');
-      expect(parsed.spec?.storageClassName).toBe('rook-ceph-block');
-      expect(parsed.spec?.resources?.requests?.storage).toBe('20Gi');
+      expect(parsed.metadata?.namespace).toBe('rose');
+      expect(parsed.spec?.accessModes).toEqual(['ReadWriteMany']);
+      expect(parsed.spec?.storageClassName).toBe('ceph-filesystem');
+      expect(parsed.spec?.resources?.requests?.storage).toBe('50Gi');
     });
   });
 
@@ -51,6 +51,9 @@ describe('Ceph PersistentVolumeClaim Turnup Specification (#57)', () => {
       expect(content).toContain('mountPath: /data');
       expect(content).toContain('fsGroup: 65532');
       expect(content).toContain('brotherlogic/prod#968');
+      expect(content).toContain('brotherlogic/prod#1024');
+      expect(content).toContain('brotherlogic/rose#312');
+      expect(content).toContain('brotherlogic/rose#350');
     });
   });
 });
