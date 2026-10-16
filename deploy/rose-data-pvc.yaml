@@ -1,6 +1,6 @@
 # Specification: Ceph Persistent Volume Claim for Rose
-# Reference: brotherlogic/prod#968
-# Parent Rose Specifications: brotherlogic/rose#29, brotherlogic/rose#55, brotherlogic/rose#56, brotherlogic/rose#57
+# Reference: brotherlogic/prod#968, brotherlogic/prod#1024
+# Parent Rose Specifications: brotherlogic/rose#29, brotherlogic/rose#55, brotherlogic/rose#56, brotherlogic/rose#57, brotherlogic/rose#312, brotherlogic/rose#350
 # Container Contract:
 #   mountPath: /data
 #   securityContext:
@@ -10,11 +10,11 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: rose-data-pvc
-  namespace: default
+  namespace: rose
 spec:
   accessModes:
-    - ReadWriteOnce
-  storageClassName: rook-ceph-block
+    - ReadWriteMany
+  storageClassName: ceph-filesystem
   resources:
     requests:
-      storage: 20Gi
+      storage: 50Gi
