@@ -94,5 +94,30 @@ describe('Root Layout Metadata & Design System Shell (#252)', () => {
       expect(cssContent).toContain('#collection');
       expect(cssContent).toMatch(/scroll-margin-top:\s*calc\(var\(--header-height\)\s*\+\s*1\.5rem\);/);
     });
+
+    it('should import tailwindcss and layer base resets in @layer base (#366)', () => {
+      expect(cssContent).toMatch(/^@import\s+["']tailwindcss["'];/);
+      expect(cssContent).toMatch(/@layer\s+base\s*\{[\s\S]*\*\s*\{[\s\S]*box-sizing:\s*border-box;/);
+    });
+
+    it('should emit compiled Tailwind utility classes in out/_next/static CSS bundle (#366)', () => {
+      const chunksDir = path.resolve(__dirname, '../out/_next/static/chunks');
+      const cssFiles = fs.readdirSync(chunksDir).filter((file) => file.endsWith('.css'));
+      expect(cssFiles.length).toBeGreaterThan(0);
+
+      const compiledCss = cssFiles
+        .map((file) => fs.readFileSync(path.join(chunksDir, file), 'utf-8'))
+        .join('\n');
+
+      expect(compiledCss).toContain('@layer utilities');
+      expect(compiledCss).toContain('.flex{display:flex}');
+      expect(compiledCss).toContain('.grid{display:grid}');
+      expect(compiledCss).toContain('.hidden{display:none}');
+      expect(compiledCss).toContain('.fixed{position:fixed}');
+      expect(compiledCss).toContain('.invisible{visibility:hidden}');
+      expect(compiledCss).toContain('.pointer-events-none{pointer-events:none}');
+      expect(compiledCss).toContain('.opacity-0{opacity:0}');
+    });
   });
 });
+

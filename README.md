@@ -2,8 +2,8 @@
 Automated Gallery Website
 
 ## Frontend
-The frontend is a static Next.js application built with Vanilla CSS design tokens.
-Run `npm run dev` to start the development server.
+The frontend is a static Next.js application built with Tailwind CSS v4 (`@import "tailwindcss";` in `app/globals.css`) and layered White Cube / Dark Luxury CSS custom properties (`@layer base`), with client-side catalog hydration via `/data/catalog.json`.
+Run `npm run dev` to start the development server, or `npm run build` to generate the static export in `out/`.
 
 ### Components
 - `ArtworkCard`: Museum-grade artwork card featuring fixed aspect-ratio containers (`aspect-square`) with zero Cumulative Layout Shift (CLS), shimmer placeholder skeleton states, lazy-loaded WebP thumbnails, error fallbacks to `/placeholder.svg`, and archival typography.
