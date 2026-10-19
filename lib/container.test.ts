@@ -80,16 +80,68 @@ describe('Containerization Configuration', () => {
       expect(content).toMatch(/return\s+200\s+'OK';/);
     });
 
-    it('should configure dedicated NFS media routes for /data/images/ and /data/thumbnails/ with strict 404', () => {
+    it('should configure dedicated NFS media routes for /data/images/ and /data/thumbnails/ with ^~ prefix priority and strict 404', () => {
       const content = fs.readFileSync(nginxConfPath, 'utf-8');
-      expect(content).toMatch(/location\s+\/data\/images\/\s*\{/);
-      expect(content).toMatch(/location\s+\/data\/thumbnails\/\s*\{/);
+      expect(content).toMatch(/location\s+\^~\s+\/data\/images\/\s*\{/);
+      expect(content).toMatch(/location\s+\^~\s+\/data\/thumbnails\/\s*\{/);
       expect(content).toContain('alias /data/images/;');
       expect(content).toContain('alias /data/thumbnails/;');
       expect(content).toContain('expires 1d;');
       expect(content).toContain('add_header Cache-Control "public, max-age=86400, must-revalidate";');
       expect(content).toContain('add_header Access-Control-Allow-Origin "*";');
       expect(content).toContain('try_files $uri =404;');
+    });
+
+    it('should route /data/images/*.jpg and /data/thumbnails/*.webp to NFS alias blocks rather than the static media regex block', () => {
+      const content = fs.readFileSync(nginxConfPath, 'utf-8');
+      const locationRegex = /location\s+(?:(=|\^~|~\*|~)\s+)?(\S+)\s*\{([\s\S]*?)\}/g;
+      const locations: Array<{ modifier: string; pattern: string; body: string }> = [];
+      let match: RegExpExecArray | null;
+      while ((match = locationRegex.exec(content)) !== null) {
+        locations.push({
+          modifier: match[1] || '',
+          pattern: match[2],
+          body: match[3],
+        });
+      }
+
+      const resolveNginxLocation = (uri: string) => {
+        // 1. Exact match (=)
+        const exact = locations.find((l) => l.modifier === '=' && l.pattern === uri);
+        if (exact) return exact;
+
+        // 2. Longest prefix match (standard or ^~)
+        const prefixMatches = locations
+          .filter((l) => (l.modifier === '' || l.modifier === '^~') && uri.startsWith(l.pattern))
+          .sort((a, b) => b.pattern.length - a.pattern.length);
+        const longestPrefix = prefixMatches[0];
+        if (longestPrefix && longestPrefix.modifier === '^~') {
+          return longestPrefix;
+        }
+
+        // 3. Regex match (~ or ~*) in order of appearance
+        for (const loc of locations) {
+          if (loc.modifier === '~' || loc.modifier === '~*') {
+            const flags = loc.modifier === '~*' ? 'i' : '';
+            if (new RegExp(loc.pattern, flags).test(uri)) {
+              return loc;
+            }
+          }
+        }
+
+        // 4. Fallback to longest standard prefix match
+        return longestPrefix;
+      };
+
+      const imageLoc = resolveNginxLocation('/data/images/test.jpg');
+      expect(imageLoc?.pattern).toBe('/data/images/');
+      expect(imageLoc?.body).toContain('alias /data/images/;');
+      expect(imageLoc?.body).toContain('max-age=86400, must-revalidate');
+
+      const thumbLoc = resolveNginxLocation('/data/thumbnails/test.webp');
+      expect(thumbLoc?.pattern).toBe('/data/thumbnails/');
+      expect(thumbLoc?.body).toContain('alias /data/thumbnails/;');
+      expect(thumbLoc?.body).toContain('max-age=86400, must-revalidate');
     });
 
     it('should configure dedicated route for /data/catalog.json with no-cache and strict 404 isolation', () => {

@@ -79,6 +79,13 @@ describe('PR Validation Workflow (.github/workflows/validate-pr.yml)', () => {
       expect(content).toContain('The Permanent Collection');
     });
 
+    it('should verify requests for existing image and thumbnail assets under /data/images/ and /data/thumbnails/ return HTTP 200', () => {
+      const content = fs.readFileSync(workflowPath, 'utf-8');
+      expect(content).toMatch(/http:\/\/localhost:8080\/data\/images\/test\.jpg/);
+      expect(content).toMatch(/http:\/\/localhost:8080\/data\/thumbnails\/test\.webp/);
+      expect(content).toMatch(/200/);
+    });
+
     it('should verify requests for missing thumbnail assets return HTTP 404', () => {
       const content = fs.readFileSync(workflowPath, 'utf-8');
       expect(content).toMatch(/http:\/\/localhost:8080\/data\/thumbnails\/nonexistent\.webp/);
@@ -112,7 +119,7 @@ describe('PR Validation Workflow (.github/workflows/validate-pr.yml)', () => {
         fs.writeFileSync(path.join(tmpDir, 'docker'), '#!/bin/sh\necho docker "$@" >> ' + path.join(tmpDir, 'trace.log') + '\n', { mode: 0o755 });
         fs.writeFileSync(
           path.join(tmpDir, 'curl'),
-          '#!/bin/sh\ncase "$*" in\n  *healthz*)\n    exit 0\n    ;;\n  *nonexistent.webp*)\n    printf "404"\n    exit 0\n    ;;\n  *)\n    printf "ROSE SERAPHINE TUCKER\\nThe Permanent Collection\\n"\n    exit 0\n    ;;\nesac\n',
+          '#!/bin/sh\ncase "$*" in\n  *healthz*)\n    exit 0\n    ;;\n  *test.jpg*|*test.webp*)\n    printf "200"\n    exit 0\n    ;;\n  *nonexistent.webp*)\n    printf "404"\n    exit 0\n    ;;\n  *)\n    printf "ROSE SERAPHINE TUCKER\\nThe Permanent Collection\\n"\n    exit 0\n    ;;\nesac\n',
           { mode: 0o755 }
         );
 

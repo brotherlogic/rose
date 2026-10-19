@@ -114,8 +114,8 @@ fi
 
 grep -q "location = /healthz" "${NGINX_CONF}" || (echo "ERROR: Missing /healthz location in nginx.conf" >&2 && exit 1)
 grep -q "location = /data/catalog.json" "${NGINX_CONF}" || (echo "ERROR: Missing /data/catalog.json location in nginx.conf" >&2 && exit 1)
-grep -q "location /data/images/" "${NGINX_CONF}" || (echo "ERROR: Missing /data/images/ location in nginx.conf" >&2 && exit 1)
-grep -q "location /data/thumbnails/" "${NGINX_CONF}" || (echo "ERROR: Missing /data/thumbnails/ location in nginx.conf" >&2 && exit 1)
+grep -q "location \^~ /data/images/" "${NGINX_CONF}" || (echo "ERROR: Missing ^~ /data/images/ location in nginx.conf" >&2 && exit 1)
+grep -q "location \^~ /data/thumbnails/" "${NGINX_CONF}" || (echo "ERROR: Missing ^~ /data/thumbnails/ location in nginx.conf" >&2 && exit 1)
 grep -q "try_files \$uri =404;" "${NGINX_CONF}" || (echo "ERROR: Missing media 404 isolation try_files in nginx.conf" >&2 && exit 1)
 grep -q "try_files \$uri \$uri.html \$uri/ /index.html =404;" "${NGINX_CONF}" || (echo "ERROR: Missing SPA routing fallback in nginx.conf" >&2 && exit 1)
 
@@ -213,6 +213,19 @@ if curl -s -f -m 2 "${TARGET_HOST}/healthz" >/dev/null 2>&1; then
   fi
   echo "PASS: Live /data/catalog.json served HTTP 200 with application/json content-type."
 
+  if [ -d "/data/images" ] && [ -w "/data/images" ] && [ -d "/data/thumbnails" ] && [ -w "/data/thumbnails" ]; then
+    echo "img" > /data/images/verify-m4-test.jpg
+    echo "thumb" > /data/thumbnails/verify-m4-test.webp
+    IMG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -m 2 "${TARGET_HOST}/data/images/verify-m4-test.jpg")
+    THUMB_OK_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -m 2 "${TARGET_HOST}/data/thumbnails/verify-m4-test.webp")
+    rm -f /data/images/verify-m4-test.jpg /data/thumbnails/verify-m4-test.webp
+    if [ "${IMG_STATUS}" != "200" ] || [ "${THUMB_OK_STATUS}" != "200" ]; then
+      echo "ERROR: Live media serving returned image=${IMG_STATUS}, thumbnail=${THUMB_OK_STATUS} instead of 200" >&2
+      exit 1
+    fi
+    echo "PASS: Live media serving verified for /data/images/verify-m4-test.jpg and /data/thumbnails/verify-m4-test.webp (HTTP 200)."
+  fi
+
   # Verify strict 404 isolation for non-existent assets
   MISSING_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -m 2 "${TARGET_HOST}/data/thumbnails/nonexistent-asset-404.webp")
   MISSING_BODY=$(curl -s -m 2 "${TARGET_HOST}/data/thumbnails/nonexistent-asset-404.webp")
@@ -233,8 +246,8 @@ else
   grep -q "default_type application/json;" "${NGINX_CONF}" || (echo "ERROR: Missing default_type application/json in catalog block" >&2 && exit 1)
 
   # Verify /data/images/ and /data/thumbnails/ route serving configuration
-  grep -q "location /data/images/ {" "${NGINX_CONF}" || (echo "ERROR: Missing location /data/images/" >&2 && exit 1)
-  grep -q "location /data/thumbnails/ {" "${NGINX_CONF}" || (echo "ERROR: Missing location /data/thumbnails/" >&2 && exit 1)
+  grep -q "location \^~ /data/images/ {" "${NGINX_CONF}" || (echo "ERROR: Missing location ^~ /data/images/" >&2 && exit 1)
+  grep -q "location \^~ /data/thumbnails/ {" "${NGINX_CONF}" || (echo "ERROR: Missing location ^~ /data/thumbnails/" >&2 && exit 1)
 
   # Verify strict 404 isolation try_files $uri =404 preventing index.html fallback
   grep -q "try_files \$uri =404;" "${NGINX_CONF}" || (echo "ERROR: Missing try_files \$uri =404; in nginx.conf" >&2 && exit 1)

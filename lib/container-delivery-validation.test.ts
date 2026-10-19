@@ -25,8 +25,8 @@ describe('Milestone 3 Container Delivery and Static Export Verification (#291)',
     const nginxConf = fs.readFileSync(nginxConfPath, 'utf-8');
     expect(nginxConf).toContain('location = /healthz');
     expect(nginxConf).toContain("return 200 'OK';");
-    expect(nginxConf).toContain('location /data/images/');
-    expect(nginxConf).toContain('location /data/thumbnails/');
+    expect(nginxConf).toContain('location ^~ /data/images/');
+    expect(nginxConf).toContain('location ^~ /data/thumbnails/');
     expect(nginxConf).toContain('try_files $uri =404;');
     expect(nginxConf).toContain('add_header Access-Control-Allow-Origin "*";');
   });
@@ -46,6 +46,8 @@ describe('Milestone 3 Container Delivery and Static Export Verification (#291)',
     expect(workflow).toContain('/healthz');
     expect(workflow).toContain('ROSE SERAPHINE TUCKER');
     expect(workflow).toContain('The Permanent Collection');
+    expect(workflow).toContain('/data/images/test.jpg');
+    expect(workflow).toContain('/data/thumbnails/test.webp');
     expect(workflow).toContain('/data/thumbnails/nonexistent.webp');
     expect(workflow).toContain('docker stop');
     expect(workflow).toContain('docker rm');
