@@ -630,3 +630,277 @@ func TestAnalyze_PerAttemptTimeout(t *testing.T) {
 	}
 }
 
+func TestAnalysisError_Methods(t *testing.T) {
+	var nilErr *AnalysisError
+	if got := nilErr.Error(); got != "" {
+		t.Errorf("expected empty string for nil *AnalysisError.Error(), got %q", got)
+	}
+	if got := nilErr.Unwrap(); got != nil {
+		t.Errorf("expected nil for nil *AnalysisError.Unwrap(), got %v", got)
+	}
+
+	emptyInner := &AnalysisError{Model: "test-model", RawContent: "raw"}
+	if got := emptyInner.Error(); got != "" {
+		t.Errorf("expected empty string when Err is nil, got %q", got)
+	}
+	if got := emptyInner.Unwrap(); got != nil {
+		t.Errorf("expected nil Unwrap when Err is nil, got %v", got)
+	}
+
+	rootErr := errors.New("underlying failure")
+	wrapped := &AnalysisError{
+		Model:      "qwen2.5vl:32b",
+		RawContent: `{"invalid": true}`,
+		Err:        rootErr,
+	}
+	if got := wrapped.Error(); got != "underlying failure" {
+		t.Errorf("expected %q, got %q", "underlying failure", got)
+	}
+	if !errors.Is(wrapped, rootErr) {
+		t.Errorf("expected errors.Is(wrapped, rootErr) to be true")
+	}
+}
+
+func TestAnalyze_AnalysisError_ParseAndValidationFailures(t *testing.T) {
+	tests := []struct {
+		name           string
+		rawContent     string
+		expectedSubstr string
+	}{
+		{
+			name:           "invalid JSON completion",
+			rawContent:     "I cannot analyze this artwork right now.",
+			expectedSubstr: "no valid json object found",
+		},
+		{
+			name:           "missing required field",
+			rawContent:     `{"title": "Untitled", "description": "` + validTestCuratorialDesc + `", "theme": "The Crayon Period"}`,
+			expectedSubstr: "missing required field: medium",
+		},
+		{
+			name:           "curatorial forbidden word violation",
+			rawContent:     `{"title": "Cute Drawing", "medium": "Wax on paper", "description": "This is a cute drawing made by a little child who loved making a mess with colors on the kitchen floor.", "theme": "The Crayon Period"}`,
+			expectedSubstr: "prohibited vocabulary rule",
+		},
+		{
+			name:           "curatorial sentence and word count violation",
+			rawContent:     `{"title": "Monolith", "medium": "Pigment on matrix", "description": "A single brief sentence.", "theme": "Monochrome Nihilism"}`,
+			expectedSubstr: "curatorial description",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"choices": []map[string]interface{}{
+						{
+							"message": map[string]string{
+								"content": tt.rawContent,
+							},
+						},
+					},
+				})
+			}))
+			defer server.Close()
+
+			svc := NewService(
+				WithEndpoint(server.URL),
+				WithModel("custom-model:32b"),
+				WithHTTPClient(server.Client()),
+			)
+
+			res, err := svc.Analyze(context.Background(), []byte("image-data"))
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil (res=%+v)", tt.name, res)
+			}
+
+			var analysisErr *AnalysisError
+			if !errors.As(err, &analysisErr) {
+				t.Fatalf("expected error to unwrap as *AnalysisError, got %T: %v", err, err)
+			}
+			if analysisErr.Model != "custom-model:32b" {
+				t.Errorf("expected Model 'custom-model:32b', got %q", analysisErr.Model)
+			}
+			if analysisErr.RawContent != tt.rawContent {
+				t.Errorf("expected RawContent %q, got %q", tt.rawContent, analysisErr.RawContent)
+			}
+			if analysisErr.Err == nil {
+				t.Fatal("expected non-nil underlying Err in AnalysisError")
+			}
+			if !strings.Contains(err.Error(), tt.expectedSubstr) {
+				t.Errorf("expected error message containing %q, got %q", tt.expectedSubstr, err.Error())
+			}
+		})
+	}
+}
+
+func TestAnalyze_AnalysisError_PreCompletionFailures(t *testing.T) {
+	t.Run("HTTP 400 Bad Request", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`invalid request`))
+		}))
+		defer server.Close()
+
+		svc := NewService(
+			WithEndpoint(server.URL),
+			WithModel("custom-model:32b"),
+			WithHTTPClient(server.Client()),
+		)
+
+		_, err := svc.Analyze(context.Background(), []byte("image-data"))
+		if err == nil {
+			t.Fatal("expected error on HTTP 400, got nil")
+		}
+
+		var analysisErr *AnalysisError
+		if !errors.As(err, &analysisErr) {
+			t.Fatalf("expected *AnalysisError, got %T: %v", err, err)
+		}
+		if analysisErr.Model != "custom-model:32b" {
+			t.Errorf("expected Model 'custom-model:32b', got %q", analysisErr.Model)
+		}
+		if analysisErr.RawContent != "" {
+			t.Errorf("expected empty RawContent on HTTP 400, got %q", analysisErr.RawContent)
+		}
+		if !strings.Contains(err.Error(), "status 400") {
+			t.Errorf("expected status 400 in error, got %q", err.Error())
+		}
+	})
+
+	t.Run("HTTP 500 Retries Exhausted", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`server error`))
+		}))
+		defer server.Close()
+
+		svc := NewService(
+			WithEndpoint(server.URL),
+			WithModel("custom-model:32b"),
+			WithHTTPClient(server.Client()),
+			WithMaxRetries(1),
+			WithInitialBackoff(1*time.Millisecond),
+		)
+
+		_, err := svc.Analyze(context.Background(), []byte("image-data"))
+		if err == nil {
+			t.Fatal("expected error on HTTP 500 retries exhausted, got nil")
+		}
+
+		var analysisErr *AnalysisError
+		if !errors.As(err, &analysisErr) {
+			t.Fatalf("expected *AnalysisError, got %T: %v", err, err)
+		}
+		if analysisErr.Model != "custom-model:32b" {
+			t.Errorf("expected Model 'custom-model:32b', got %q", analysisErr.Model)
+		}
+		if analysisErr.RawContent != "" {
+			t.Errorf("expected empty RawContent on HTTP 500, got %q", analysisErr.RawContent)
+		}
+		if !strings.Contains(err.Error(), "vision inference retries exhausted") {
+			t.Errorf("expected retries exhausted message, got %q", err.Error())
+		}
+	})
+
+	t.Run("Invalid JSON Envelope", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`not-json`))
+		}))
+		defer server.Close()
+
+		svc := NewService(
+			WithEndpoint(server.URL),
+			WithModel("custom-model:32b"),
+			WithHTTPClient(server.Client()),
+		)
+
+		_, err := svc.Analyze(context.Background(), []byte("image-data"))
+		if err == nil {
+			t.Fatal("expected error on invalid JSON envelope, got nil")
+		}
+
+		var analysisErr *AnalysisError
+		if !errors.As(err, &analysisErr) {
+			t.Fatalf("expected *AnalysisError, got %T: %v", err, err)
+		}
+		if analysisErr.Model != "custom-model:32b" {
+			t.Errorf("expected Model 'custom-model:32b', got %q", analysisErr.Model)
+		}
+		if analysisErr.RawContent != "" {
+			t.Errorf("expected empty RawContent on envelope unmarshal error, got %q", analysisErr.RawContent)
+		}
+		if !strings.Contains(err.Error(), "failed to unmarshal chat completion response") {
+			t.Errorf("expected envelope unmarshal error, got %q", err.Error())
+		}
+	})
+
+	t.Run("Empty Choices", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"choices": []}`))
+		}))
+		defer server.Close()
+
+		svc := NewService(
+			WithEndpoint(server.URL),
+			WithModel("custom-model:32b"),
+			WithHTTPClient(server.Client()),
+		)
+
+		_, err := svc.Analyze(context.Background(), []byte("image-data"))
+		if err == nil {
+			t.Fatal("expected error on empty choices, got nil")
+		}
+
+		var analysisErr *AnalysisError
+		if !errors.As(err, &analysisErr) {
+			t.Fatalf("expected *AnalysisError, got %T: %v", err, err)
+		}
+		if analysisErr.Model != "custom-model:32b" {
+			t.Errorf("expected Model 'custom-model:32b', got %q", analysisErr.Model)
+		}
+		if analysisErr.RawContent != "" {
+			t.Errorf("expected empty RawContent on empty choices, got %q", analysisErr.RawContent)
+		}
+		if !strings.Contains(err.Error(), "no completion choices returned by model") {
+			t.Errorf("expected empty choices error, got %q", err.Error())
+		}
+	})
+
+	t.Run("Exhausted Transport Retries", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		server.Close() // Close immediately to force transport error
+
+		svc := NewService(
+			WithEndpoint(server.URL),
+			WithModel("custom-model:32b"),
+			WithMaxRetries(1),
+			WithInitialBackoff(1*time.Millisecond),
+		)
+
+		_, err := svc.Analyze(context.Background(), []byte("image-data"))
+		if err == nil {
+			t.Fatal("expected error on closed server transport failure, got nil")
+		}
+
+		var analysisErr *AnalysisError
+		if !errors.As(err, &analysisErr) {
+			t.Fatalf("expected *AnalysisError, got %T: %v", err, err)
+		}
+		if analysisErr.Model != "custom-model:32b" {
+			t.Errorf("expected Model 'custom-model:32b', got %q", analysisErr.Model)
+		}
+		if analysisErr.RawContent != "" {
+			t.Errorf("expected empty RawContent on transport error, got %q", analysisErr.RawContent)
+		}
+		if !strings.Contains(err.Error(), "vision inference retries exhausted") {
+			t.Errorf("expected retries exhausted error, got %q", err.Error())
+		}
+	})
+}
+
+
