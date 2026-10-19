@@ -3018,12 +3018,18 @@ func TestRun_CatalogGeneration_ZeroSuccessVisionFailure(t *testing.T) {
 		t.Fatalf("expected exit code 1 when all newly attempted photos fail vision analysis, got %d", exitCode)
 	}
 
-	// Verify failure issue was still reported for 0 synced photos
+	// Verify failure issue was reported once with Stage "Metadata Generation" and MetadataFailures populated
 	if reporter.createCalls.Load() != 1 {
 		t.Fatalf("expected 1 failure issue created, got %d", reporter.createCalls.Load())
 	}
-	if reporter.lastReport.Stage != "Photo Processing - 0 Synced" {
-		t.Errorf("expected stage 'Photo Processing - 0 Synced', got %q", reporter.lastReport.Stage)
+	if reporter.lastReport.Stage != "Metadata Generation" {
+		t.Errorf("expected stage 'Metadata Generation', got %q", reporter.lastReport.Stage)
+	}
+	if len(reporter.lastReport.MetadataFailures) != 2 {
+		t.Fatalf("expected 2 MetadataFailures, got %d", len(reporter.lastReport.MetadataFailures))
+	}
+	if reporter.lastReport.MetadataFailures[0].PhotoID != "new-fail-1" || reporter.lastReport.MetadataFailures[1].PhotoID != "new-fail-2" {
+		t.Errorf("unexpected MetadataFailures photo IDs: %+v", reporter.lastReport.MetadataFailures)
 	}
 
 	// Verify catalog.json was still generated from the existing .proto.bin files on disk
@@ -3231,4 +3237,330 @@ func TestRun_Phase1ZeroSuccess_Phase2BackfillStillExecutes(t *testing.T) {
 		t.Errorf("expected legacy proto to be overwritten with real metadata, got title=%q medium=%q", art.GetTitle(), art.GetMedium())
 	}
 }
+
+func TestRun_MetadataFailure_Phase1PartialSuccess(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "p1-ok", DownloadURL: "https://photos.google.com/p1-ok"},
+			{ID: "p2-fail", DownloadURL: "https://photos.google.com/p2-fail"},
+		},
+		downloadedData: rawJPEG,
+	}
+
+	rawLLMOutput := `{"title":"Evening Study","medium":"Oil on Canvas","description":"A masterpiece of light.","theme":"Realism"}`
+	calls := 0
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			calls++
+			if calls == 2 {
+				return nil, &vision.AnalysisError{
+					Model:      "qwen2.5vl:32b",
+					RawContent: rawLLMOutput,
+					Err:        errors.New(`curatorial validation failed: description contains prohibited word "masterpiece"`),
+				}
+			}
+			return &vision.AnalysisResult{
+				Title:       "Valid Study",
+				Medium:      "Oil on Canvas",
+				Description: "Warm ochre pigments layered across the canvas surface.",
+				Theme:       "Realism",
+			}, nil
+		},
+	}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, m, 5)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 on partial Phase 1 vision failure, got %d", exitCode)
+	}
+
+	// Verify catalog.json was updated with the successful artwork
+	catalogBytes, err := os.ReadFile(filepath.Join(tempDir, "catalog.json"))
+	if err != nil {
+		t.Fatalf("expected catalog.json to be generated: %v", err)
+	}
+	var catalog []storage.CatalogArtwork
+	if err := json.Unmarshal(catalogBytes, &catalog); err != nil {
+		t.Fatalf("failed to unmarshal catalog.json: %v", err)
+	}
+	if len(catalog) != 1 || catalog[0].ID != "p1-ok" {
+		t.Errorf("expected catalog.json to contain p1-ok, got %+v", catalog)
+	}
+
+	// Verify 1 consolidated failure issue was filed
+	if reporter.createCalls.Load() != 1 {
+		t.Fatalf("expected 1 failure issue created, got %d", reporter.createCalls.Load())
+	}
+	if reporter.lastReport.Stage != "Metadata Generation" {
+		t.Errorf("expected Stage 'Metadata Generation', got %q", reporter.lastReport.Stage)
+	}
+	if reporter.lastReport.PhotosFetched != 2 || reporter.lastReport.PhotosAttempted != 2 || reporter.lastReport.PhotosSuccessful != 1 {
+		t.Errorf("unexpected counts: fetched=%d attempted=%d successful=%d",
+			reporter.lastReport.PhotosFetched, reporter.lastReport.PhotosAttempted, reporter.lastReport.PhotosSuccessful)
+	}
+	if len(reporter.lastReport.MetadataFailures) != 1 {
+		t.Fatalf("expected 1 MetadataFailure, got %d", len(reporter.lastReport.MetadataFailures))
+	}
+	mf := reporter.lastReport.MetadataFailures[0]
+	if mf.PhotoID != "p2-fail" {
+		t.Errorf("expected PhotoID 'p2-fail', got %q", mf.PhotoID)
+	}
+	if mf.Phase != "Phase 1: New Ingestion" {
+		t.Errorf("expected Phase 'Phase 1: New Ingestion', got %q", mf.Phase)
+	}
+	if mf.Model != "qwen2.5vl:32b" {
+		t.Errorf("expected Model 'qwen2.5vl:32b', got %q", mf.Model)
+	}
+	if mf.RawOutput != rawLLMOutput {
+		t.Errorf("expected RawOutput %q, got %q", rawLLMOutput, mf.RawOutput)
+	}
+	if !strings.Contains(mf.Reason, `prohibited word "masterpiece"`) {
+		t.Errorf("expected Reason to contain prohibited word error, got %q", mf.Reason)
+	}
+	if !strings.Contains(reporter.lastReport.LogSummary, "p2-fail") || !strings.Contains(reporter.lastReport.LogSummary, "Phase 1: New Ingestion") {
+		t.Errorf("expected LogSummary to summarize failed photo, got %q", reporter.lastReport.LogSummary)
+	}
+}
+
+func TestRun_MetadataFailure_Phase2BackfillOnly(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	// Pre-populate 1 valid annotated artwork so catalog.json has content
+	if err := store.WriteImage("valid-existing", rawJPEG); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteThumbnail("valid-existing", []byte("RIFFxxxxWEBP")); err != nil {
+		t.Fatal(err)
+	}
+	validProto, err := proto.Marshal(&gallery.Artwork{
+		Id:            "valid-existing",
+		Title:         "Existing Work",
+		Medium:        "Charcoal",
+		Description:   "Existing description",
+		ThemeId:       "Minimalism",
+		Timestamp:     1700000100,
+		ImagePath:     "images/valid-existing.jpg",
+		ThumbnailPath: "thumbnails/valid-existing.webp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteArtworkProtoAtomic("valid-existing", validProto); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveProcessedPhoto("valid-existing"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-populate 2 unannotated backfill photos on disk
+	for i, id := range []string{"bf-fail-1", "bf-fail-2"} {
+		if err := store.WriteImage(id, rawJPEG); err != nil {
+			t.Fatal(err)
+		}
+		ts := time.Unix(int64(1700000200+i*100), 0)
+		if err := os.Chtimes(filepath.Join(tempDir, "images", id+".jpg"), ts, ts); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveProcessedPhoto(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Album has no new photos (attemptedCount == 0)
+	photoSvc := &mockPhotoService{photos: []photos.Photo{}}
+
+	calls := 0
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			calls++
+			if calls == 1 {
+				return nil, &vision.AnalysisError{
+					Model:      "qwen2.5vl:32b",
+					RawContent: `{"title":"Too Short"}`,
+					Err:        errors.New("missing required fields in analysis result"),
+				}
+			}
+			return nil, &vision.AnalysisError{
+				Model:      "qwen2.5vl:32b",
+				RawContent: "",
+				Err:        errors.New("vision API returned status 502"),
+			}
+		},
+	}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, m, 5)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 on Phase 2 backfill vision failures, got %d", exitCode)
+	}
+
+	// Verify catalog.json was still updated
+	catalogBytes, err := os.ReadFile(filepath.Join(tempDir, "catalog.json"))
+	if err != nil {
+		t.Fatalf("expected catalog.json to be generated: %v", err)
+	}
+	var catalog []storage.CatalogArtwork
+	if err := json.Unmarshal(catalogBytes, &catalog); err != nil {
+		t.Fatalf("failed to unmarshal catalog.json: %v", err)
+	}
+	if len(catalog) != 1 || catalog[0].ID != "valid-existing" {
+		t.Errorf("expected catalog.json to contain valid-existing, got %+v", catalog)
+	}
+
+	// Verify 1 consolidated issue listing both backfill failures
+	if reporter.createCalls.Load() != 1 {
+		t.Fatalf("expected 1 consolidated failure issue, got %d", reporter.createCalls.Load())
+	}
+	if reporter.lastReport.Stage != "Metadata Generation" {
+		t.Errorf("expected Stage 'Metadata Generation', got %q", reporter.lastReport.Stage)
+	}
+	if len(reporter.lastReport.MetadataFailures) != 2 {
+		t.Fatalf("expected 2 MetadataFailures, got %d", len(reporter.lastReport.MetadataFailures))
+	}
+	for _, mf := range reporter.lastReport.MetadataFailures {
+		if mf.Phase != "Phase 2: Backfill" {
+			t.Errorf("expected Phase 'Phase 2: Backfill', got %q", mf.Phase)
+		}
+		if mf.Model != "qwen2.5vl:32b" {
+			t.Errorf("expected Model 'qwen2.5vl:32b', got %q", mf.Model)
+		}
+	}
+}
+
+func TestRun_MetadataFailure_CombinedPhase1AndPhase2(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	// 1 unannotated backfill candidate on disk
+	if err := store.WriteImage("bf-candidate-1", rawJPEG); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveProcessedPhoto("bf-candidate-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1 new photo in Phase 1
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "phase1-new-1", DownloadURL: "https://photos.google.com/phase1-new-1"},
+		},
+		downloadedData: rawJPEG,
+	}
+
+	calls := 0
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			calls++
+			if calls == 1 {
+				return nil, &vision.AnalysisError{
+					Model:      "qwen2.5vl:32b",
+					RawContent: "not-json-at-all",
+					Err:        errors.New("no valid json object found in response"),
+				}
+			}
+			return nil, &vision.AnalysisError{
+				Model:      "qwen2.5vl:32b",
+				RawContent: `{"title":"Backfill","medium":"Ink","description":"Too short.","theme":"Minimalism"}`,
+				Err:        errors.New("description word count 2 is outside allowed range [50, 120]"),
+			}
+		},
+	}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, m, 5)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 on combined Phase 1 + Phase 2 vision failures, got %d", exitCode)
+	}
+
+	if reporter.createCalls.Load() != 1 {
+		t.Fatalf("expected 1 consolidated failure issue, got %d", reporter.createCalls.Load())
+	}
+	if reporter.lastReport.Stage != "Metadata Generation" {
+		t.Errorf("expected Stage 'Metadata Generation', got %q", reporter.lastReport.Stage)
+	}
+	if len(reporter.lastReport.MetadataFailures) != 2 {
+		t.Fatalf("expected 2 MetadataFailures, got %d", len(reporter.lastReport.MetadataFailures))
+	}
+	if reporter.lastReport.MetadataFailures[0].PhotoID != "phase1-new-1" || reporter.lastReport.MetadataFailures[0].Phase != "Phase 1: New Ingestion" {
+		t.Errorf("unexpected first MetadataFailure: %+v", reporter.lastReport.MetadataFailures[0])
+	}
+	if reporter.lastReport.MetadataFailures[1].PhotoID != "bf-candidate-1" || reporter.lastReport.MetadataFailures[1].Phase != "Phase 2: Backfill" {
+		t.Errorf("unexpected second MetadataFailure: %+v", reporter.lastReport.MetadataFailures[1])
+	}
+}
+
+func TestRun_MetadataFailure_RateLimitWrappedInAnalysisError_Exits0WithoutFilingIssue(t *testing.T) {
+	t.Run("Phase1WrappedRateLimit", func(t *testing.T) {
+		tempDir := t.TempDir()
+		store := storage.NewStore(tempDir)
+		rawJPEG := createTestJPEG(100, 100)
+
+		photoSvc := &mockPhotoService{
+			photos: []photos.Photo{
+				{ID: "p1-rl", DownloadURL: "https://photos.google.com/p1-rl"},
+			},
+			downloadedData: rawJPEG,
+		}
+		visionSvc := &mockVisionService{
+			analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+				return nil, &vision.AnalysisError{
+					Model: "qwen2.5vl:32b",
+					Err:   errors.New("vision API returned status 429: rate limit exceeded"),
+				}
+			},
+		}
+		reporter := &mockIssueReporter{}
+
+		exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, nil, 5)
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0 on Phase 1 rate limit, got %d", exitCode)
+		}
+		if reporter.createCalls.Load() != 0 {
+			t.Errorf("expected 0 failure issues created on rate limit, got %d", reporter.createCalls.Load())
+		}
+	})
+
+	t.Run("Phase2WrappedRateLimit", func(t *testing.T) {
+		tempDir := t.TempDir()
+		store := storage.NewStore(tempDir)
+		rawJPEG := createTestJPEG(100, 100)
+
+		if err := store.WriteImage("bf-rl", rawJPEG); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveProcessedPhoto("bf-rl"); err != nil {
+			t.Fatal(err)
+		}
+
+		photoSvc := &mockPhotoService{photos: []photos.Photo{}}
+		visionSvc := &mockVisionService{
+			analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+				return nil, &vision.AnalysisError{
+					Model: "qwen2.5vl:32b",
+					Err:   errors.New("vision API returned status 429: rate limit exceeded"),
+				}
+			},
+		}
+		reporter := &mockIssueReporter{}
+
+		exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, nil, 5)
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0 on Phase 2 rate limit, got %d", exitCode)
+		}
+		if reporter.createCalls.Load() != 0 {
+			t.Errorf("expected 0 failure issues created on rate limit, got %d", reporter.createCalls.Load())
+		}
+	})
+}
+
 
