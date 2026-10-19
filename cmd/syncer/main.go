@@ -583,32 +583,9 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		log.Printf("Successfully processed and stored photo %s", photo.ID)
 	}
 
-	if attemptedCount > 0 && successCount == 0 {
-		if store != nil {
-			if err := store.GenerateCatalog(); err != nil {
-				m.IncSyncErrors()
-				log.Printf("Error generating catalog.json: %v", err)
-			}
-		}
-		log.Printf("Syncer failed: 0 of %d attempted photo(s) synced", attemptedCount)
-		reportFailure(reporter, github.FailureReport{
-			Stage:            "Photo Processing - 0 Synced",
-			Timestamp:        time.Now().UTC(),
-			Error:            fmt.Errorf("zero photos synced out of %d attempted", attemptedCount),
-			PhotosFetched:    fetchedCount,
-			PhotosAttempted:  attemptedCount,
-			PhotosSuccessful: 0,
-			LogSummary:       fmt.Sprintf("syncer failed to sync any photos (attempted %d, failed %d)", attemptedCount, errorCount),
-		})
-		return 1
-	}
+	phase1ErrorCount := errorCount
 
 	// Phase 2: Chronological Backfill Engine
-	seenPhotos := make(map[string]bool, len(photosList))
-	for _, p := range photosList {
-		seenPhotos[p.ID] = true
-	}
-
 	var backfillAnnotationsCount int
 	remainingQuota := maxQuota - newAnnotationsCount
 	if store != nil && (maxQuota <= 0 || remainingQuota > 0) {
@@ -630,9 +607,6 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 
 		for _, candidate := range candidates {
 			if attemptedInPhase1[candidate.ID] {
-				continue
-			}
-			if seenPhotos[candidate.ID] && store.HasArtworkProto(candidate.ID) {
 				continue
 			}
 
@@ -765,6 +739,26 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 		}
 	}
 	log.Printf("Backfill phase completed: %d photo(s) annotated", backfillAnnotationsCount)
+
+	if attemptedCount > 0 && successCount == 0 {
+		if store != nil {
+			if err := store.GenerateCatalog(); err != nil {
+				m.IncSyncErrors()
+				log.Printf("Error generating catalog.json: %v", err)
+			}
+		}
+		log.Printf("Syncer failed: 0 of %d attempted photo(s) synced", attemptedCount)
+		reportFailure(reporter, github.FailureReport{
+			Stage:            "Photo Processing - 0 Synced",
+			Timestamp:        time.Now().UTC(),
+			Error:            fmt.Errorf("zero photos synced out of %d attempted", attemptedCount),
+			PhotosFetched:    fetchedCount,
+			PhotosAttempted:  attemptedCount,
+			PhotosSuccessful: 0,
+			LogSummary:       fmt.Sprintf("syncer failed to sync any photos (attempted %d, failed %d)", attemptedCount, phase1ErrorCount),
+		})
+		return 1
+	}
 
 	if store != nil {
 		if err := store.GenerateCatalog(); err != nil {

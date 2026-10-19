@@ -1752,6 +1752,7 @@ func TestBackfillMissingThumbnails_ProcessedPhoto(t *testing.T) {
 	legacyArtwork := &gallery.Artwork{
 		Id:            photoID,
 		Title:         "Legacy artwork",
+		Medium:        "Oil on Canvas",
 		Description:   "A beautiful vintage capture",
 		ThemeId:       "Vintage",
 		Timestamp:     time.Now().Unix(),
@@ -1973,6 +1974,7 @@ func TestProcessedPhoto_LegacyImageMigrated(t *testing.T) {
 	initialArtwork := &gallery.Artwork{
 		Id:        photoID,
 		Title:     "Old Legacy Art",
+		Medium:    "Oil on Canvas",
 		ImagePath: photoID + ".jpg",
 	}
 	protoBytes, err := proto.Marshal(initialArtwork)
@@ -3042,3 +3044,191 @@ func TestRun_CatalogGeneration_ZeroSuccessVisionFailure(t *testing.T) {
 		t.Errorf("expected reverse-chronological catalog [existing-art-2, existing-art-1], got [%s, %s]", catalog[0].ID, catalog[1].ID)
 	}
 }
+
+func TestRun_Backfill_LegacyMockArtworkProtoInAlbum_Overwritten(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(120, 120)
+
+	photoList := []photos.Photo{
+		{ID: "legacy-mock-1", DownloadURL: "https://photos.google.com/legacy-mock-1"},
+		{ID: "legacy-mock-2", DownloadURL: "https://photos.google.com/legacy-mock-2"},
+	}
+
+	for i, p := range photoList {
+		if err := store.WriteImage(p.ID, rawJPEG); err != nil {
+			t.Fatal(err)
+		}
+		thumbBytes, err := thumbnail.GenerateThumbnail(rawJPEG)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.WriteThumbnail(p.ID, thumbBytes); err != nil {
+			t.Fatal(err)
+		}
+		legacyProto, err := proto.Marshal(&gallery.Artwork{
+			Id:            p.ID,
+			Title:         "A beautiful landscape",
+			Description:   "A beautiful landscape",
+			ThemeId:       "Nature",
+			Medium:        "",
+			Timestamp:     int64(1700000100 + i*100),
+			ImagePath:     p.ID + ".jpg",
+			ThumbnailPath: "",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.WriteArtworkProtoAtomic(p.ID, legacyProto); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveProcessedPhoto(p.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	photoSvc := &mockPhotoService{
+		photos:         photoList,
+		downloadedData: rawJPEG,
+	}
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			return &vision.AnalysisResult{
+				Title:       "Crimson Horizon",
+				Medium:      "Acrylic on Linen",
+				Description: "Rich crimson tones blending across the horizon",
+				Theme:       "Abstract Expressionism",
+			}, nil
+		},
+	}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, nil, m, 5)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+
+	if visionSvc.callCount != 2 {
+		t.Fatalf("expected visionSvc.Analyze called 2 times in Phase 2 backfill, got %d", visionSvc.callCount)
+	}
+
+	for i, p := range photoList {
+		pbBytes, err := store.ReadArtworkProto(p.ID)
+		if err != nil {
+			t.Fatalf("failed to read updated proto for %s: %v", p.ID, err)
+		}
+		var art gallery.Artwork
+		if err := proto.Unmarshal(pbBytes, &art); err != nil {
+			t.Fatalf("failed to unmarshal updated proto for %s: %v", p.ID, err)
+		}
+		if art.GetTitle() != "Crimson Horizon" {
+			t.Errorf("expected Title 'Crimson Horizon' for %s, got %q", p.ID, art.GetTitle())
+		}
+		if art.GetMedium() != "Acrylic on Linen" {
+			t.Errorf("expected Medium 'Acrylic on Linen' for %s, got %q", p.ID, art.GetMedium())
+		}
+		if art.GetDescription() != "Rich crimson tones blending across the horizon" {
+			t.Errorf("expected updated Description for %s, got %q", p.ID, art.GetDescription())
+		}
+		if art.GetThemeId() != "Abstract Expressionism" {
+			t.Errorf("expected ThemeId 'Abstract Expressionism' for %s, got %q", p.ID, art.GetThemeId())
+		}
+		if art.GetTimestamp() != int64(1700000100+i*100) {
+			t.Errorf("expected preserved Timestamp %d for %s, got %d", 1700000100+i*100, p.ID, art.GetTimestamp())
+		}
+		if art.GetImagePath() != "images/"+p.ID+".jpg" {
+			t.Errorf("expected normalized ImagePath 'images/%s.jpg', got %q", p.ID, art.GetImagePath())
+		}
+		if art.GetThumbnailPath() != "thumbnails/"+p.ID+".webp" {
+			t.Errorf("expected normalized ThumbnailPath 'thumbnails/%s.webp', got %q", p.ID, art.GetThumbnailPath())
+		}
+	}
+}
+
+func TestRun_Phase1ZeroSuccess_Phase2BackfillStillExecutes(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
+
+	// Existing legacy mock photo on disk and in the album
+	legacyID := "legacy-on-disk-1"
+	if err := store.WriteImage(legacyID, rawJPEG); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteThumbnail(legacyID, []byte("RIFFxxxxWEBP")); err != nil {
+		t.Fatal(err)
+	}
+	legacyProto, err := proto.Marshal(&gallery.Artwork{
+		Id:          legacyID,
+		Title:       "A beautiful landscape",
+		Description: "A beautiful landscape",
+		ThemeId:     "Nature",
+		Medium:      "",
+		Timestamp:   1700000500,
+		ImagePath:   "images/" + legacyID + ".jpg",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteArtworkProtoAtomic(legacyID, legacyProto); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveProcessedPhoto(legacyID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Album has the legacy processed photo plus a new photo whose download fails in Phase 1
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: legacyID, DownloadURL: "https://photos.google.com/" + legacyID},
+			{ID: "new-dl-fail", DownloadURL: "https://photos.google.com/new-dl-fail"},
+		},
+		downloadErrByID: map[string]error{
+			"new-dl-fail": errors.New("network download error"),
+		},
+		downloadedData: rawJPEG,
+	}
+
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			return &vision.AnalysisResult{
+				Title:       "Backfilled Masterpiece",
+				Medium:      "Watercolour on Paper",
+				Description: "Delicate washes of indigo",
+				Theme:       "Minimalism",
+			}, nil
+		},
+	}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
+
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, m, 5)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 when Phase 1 fails all attempted new photos, got %d", exitCode)
+	}
+
+	if reporter.createCalls.Load() != 1 {
+		t.Fatalf("expected 1 failure issue reported for Phase 1 zero success, got %d", reporter.createCalls.Load())
+	}
+	if reporter.lastReport.Stage != "Photo Processing - 0 Synced" {
+		t.Errorf("expected stage 'Photo Processing - 0 Synced', got %q", reporter.lastReport.Stage)
+	}
+
+	// Verify Phase 2 still executed and backfilled the legacy photo
+	if visionSvc.callCount != 1 {
+		t.Fatalf("expected Phase 2 to execute 1 vision analysis despite Phase 1 failure, got %d", visionSvc.callCount)
+	}
+
+	pbBytes, err := store.ReadArtworkProto(legacyID)
+	if err != nil {
+		t.Fatalf("failed to read backfilled proto: %v", err)
+	}
+	var art gallery.Artwork
+	if err := proto.Unmarshal(pbBytes, &art); err != nil {
+		t.Fatalf("failed to unmarshal backfilled proto: %v", err)
+	}
+	if art.GetTitle() != "Backfilled Masterpiece" || art.GetMedium() != "Watercolour on Paper" {
+		t.Errorf("expected legacy proto to be overwritten with real metadata, got title=%q medium=%q", art.GetTitle(), art.GetMedium())
+	}
+}
+
