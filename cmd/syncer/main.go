@@ -140,6 +140,26 @@ func reportFailure(reporter github.IssueReporter, report github.FailureReport) {
 	log.Printf("Successfully created failure issue for stage: %s", report.Stage)
 }
 
+func buildMetadataFailure(photoID, phase string, err error) github.MetadataFailure {
+	mf := github.MetadataFailure{
+		PhotoID: photoID,
+		Phase:   phase,
+		Model:   "unknown",
+		Reason:  err.Error(),
+	}
+	var analysisErr *vision.AnalysisError
+	if errors.As(err, &analysisErr) {
+		if analysisErr.Model != "" {
+			mf.Model = analysisErr.Model
+		}
+		mf.RawOutput = analysisErr.RawContent
+		if analysisErr.Err != nil {
+			mf.Reason = analysisErr.Err.Error()
+		}
+	}
+	return mf
+}
+
 // buildArtwork creates a gallery.Artwork proto instance, checking if a thumbnail exists in storage
 // and populating ThumbnailPath if found, or falling back to empty string if absent or store is nil.
 func buildArtwork(photoID string, res *vision.AnalysisResult, timestamp int64, store *storage.Store) *gallery.Artwork {
@@ -268,6 +288,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 	log.Printf("Fetched %d photo(s) to process", fetchedCount)
 
 	var attemptedCount, successCount, errorCount, newAnnotationsCount int
+	var metadataFailures []github.MetadataFailure
 	attemptedInPhase1 := make(map[string]bool)
 	for _, photo := range photosList {
 		if ctx.Err() != nil {
@@ -527,6 +548,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			m.IncAnnotationErrors()
 			m.IncSyncErrors()
 			log.Printf("Error analyzing image %s: %v", photo.ID, err)
+			metadataFailures = append(metadataFailures, buildMetadataFailure(photo.ID, "Phase 1: New Ingestion", err))
 			errorCount++
 			continue
 		}
@@ -689,6 +711,7 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 				m.IncAnnotationErrors()
 				m.IncSyncErrors()
 				log.Printf("Error analyzing backfill image %s: %v", candidate.ID, err)
+				metadataFailures = append(metadataFailures, buildMetadataFailure(candidate.ID, "Phase 2: Backfill", err))
 				errorCount++
 				continue
 			}
@@ -740,26 +763,6 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 	}
 	log.Printf("Backfill phase completed: %d photo(s) annotated", backfillAnnotationsCount)
 
-	if attemptedCount > 0 && successCount == 0 {
-		if store != nil {
-			if err := store.GenerateCatalog(); err != nil {
-				m.IncSyncErrors()
-				log.Printf("Error generating catalog.json: %v", err)
-			}
-		}
-		log.Printf("Syncer failed: 0 of %d attempted photo(s) synced", attemptedCount)
-		reportFailure(reporter, github.FailureReport{
-			Stage:            "Photo Processing - 0 Synced",
-			Timestamp:        time.Now().UTC(),
-			Error:            fmt.Errorf("zero photos synced out of %d attempted", attemptedCount),
-			PhotosFetched:    fetchedCount,
-			PhotosAttempted:  attemptedCount,
-			PhotosSuccessful: 0,
-			LogSummary:       fmt.Sprintf("syncer failed to sync any photos (attempted %d, failed %d)", attemptedCount, phase1ErrorCount),
-		})
-		return 1
-	}
-
 	if store != nil {
 		if err := store.GenerateCatalog(); err != nil {
 			m.IncSyncErrors()
@@ -775,6 +778,40 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			})
 			return 1
 		}
+	}
+
+	if len(metadataFailures) > 0 {
+		var summaryLines []string
+		for _, mf := range metadataFailures {
+			summaryLines = append(summaryLines, fmt.Sprintf("%s (%s, model=%s): %s", mf.PhotoID, mf.Phase, mf.Model, mf.Reason))
+		}
+		summary := strings.Join(summaryLines, "\n")
+		log.Printf("Syncer failed: metadata generation failed for %d photo(s)", len(metadataFailures))
+		reportFailure(reporter, github.FailureReport{
+			Stage:            "Metadata Generation",
+			Timestamp:        time.Now().UTC(),
+			Error:            fmt.Errorf("metadata generation failed for %d photo(s)", len(metadataFailures)),
+			PhotosFetched:    fetchedCount,
+			PhotosAttempted:  attemptedCount,
+			PhotosSuccessful: successCount,
+			LogSummary:       summary,
+			MetadataFailures: metadataFailures,
+		})
+		return 1
+	}
+
+	if attemptedCount > 0 && successCount == 0 {
+		log.Printf("Syncer failed: 0 of %d attempted photo(s) synced", attemptedCount)
+		reportFailure(reporter, github.FailureReport{
+			Stage:            "Photo Processing - 0 Synced",
+			Timestamp:        time.Now().UTC(),
+			Error:            fmt.Errorf("zero photos synced out of %d attempted", attemptedCount),
+			PhotosFetched:    fetchedCount,
+			PhotosAttempted:  attemptedCount,
+			PhotosSuccessful: 0,
+			LogSummary:       fmt.Sprintf("syncer failed to sync any photos (attempted %d, failed %d)", attemptedCount, phase1ErrorCount),
+		})
+		return 1
 	}
 
 	if errorCount > 0 {
