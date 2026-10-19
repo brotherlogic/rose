@@ -107,7 +107,7 @@ func NewService(opts ...Option) *Service {
 
 	model := os.Getenv("VISION_MODEL")
 	if model == "" {
-		model = "llama3.2-vision:90b"
+		model = "qwen2.5vl:32b"
 	}
 
 	timeout := 120 * time.Second

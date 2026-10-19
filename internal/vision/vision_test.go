@@ -62,8 +62,8 @@ func TestNewService_DefaultConfig(t *testing.T) {
 	if cfg.Endpoint != "http://localhost:11434/v1" {
 		t.Errorf("expected default endpoint 'http://localhost:11434/v1', got %q", cfg.Endpoint)
 	}
-	if cfg.Model != "llama3.2-vision:90b" {
-		t.Errorf("expected default model 'llama3.2-vision:90b', got %q", cfg.Model)
+	if cfg.Model != "qwen2.5vl:32b" {
+		t.Errorf("expected default model 'qwen2.5vl:32b', got %q", cfg.Model)
 	}
 	if cfg.Timeout != 120*time.Second {
 		t.Errorf("expected default timeout 120s, got %v", cfg.Timeout)
