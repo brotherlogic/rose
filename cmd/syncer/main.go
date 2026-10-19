@@ -585,6 +585,12 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 	}
 
 	if attemptedCount > 0 && successCount == 0 {
+		if store != nil {
+			if err := store.GenerateCatalog(); err != nil {
+				m.IncSyncErrors()
+				log.Printf("Error generating catalog.json: %v", err)
+			}
+		}
 		log.Printf("Syncer failed: 0 of %d attempted photo(s) synced", attemptedCount)
 		reportFailure(reporter, github.FailureReport{
 			Stage:            "Photo Processing - 0 Synced",

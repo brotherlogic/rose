@@ -2936,16 +2936,96 @@ func TestRun_CatalogGeneration_FailureReportsIssueAndExits1(t *testing.T) {
 	}
 }
 
+func TestRun_CatalogGeneration_ZeroSuccessVisionFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	store := storage.NewStore(tempDir)
+	rawJPEG := createTestJPEG(100, 100)
 
+	// Pre-populate 2 already-processed artworks on disk (without catalog.json)
+	existingPhotos := []struct {
+		id        string
+		title     string
+		timestamp int64
+	}{
+		{id: "existing-art-1", title: "Older Existing Piece", timestamp: 1700000100},
+		{id: "existing-art-2", title: "Newer Existing Piece", timestamp: 1700000200},
+	}
 
+	for _, ep := range existingPhotos {
+		if err := store.WriteImage(ep.id, rawJPEG); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.WriteThumbnail(ep.id, []byte("RIFFxxxxWEBP")); err != nil {
+			t.Fatal(err)
+		}
+		pbBytes, err := proto.Marshal(&gallery.Artwork{
+			Id:            ep.id,
+			Title:         ep.title,
+			Medium:        "Oil on Canvas",
+			Description:   "Pre-existing annotated artwork",
+			ThemeId:       "Impressionism",
+			Timestamp:     ep.timestamp,
+			ImagePath:     "images/" + ep.id + ".jpg",
+			ThumbnailPath: "thumbnails/" + ep.id + ".webp",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.WriteArtworkProtoAtomic(ep.id, pbBytes); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveProcessedPhoto(ep.id); err != nil {
+			t.Fatal(err)
+		}
+	}
 
+	// Album contains the 2 already-processed photos plus 2 new photos that will fail vision analysis
+	photoSvc := &mockPhotoService{
+		photos: []photos.Photo{
+			{ID: "existing-art-1", DownloadURL: "https://photos.google.com/existing-art-1"},
+			{ID: "existing-art-2", DownloadURL: "https://photos.google.com/existing-art-2"},
+			{ID: "new-fail-1", DownloadURL: "https://photos.google.com/new-fail-1"},
+			{ID: "new-fail-2", DownloadURL: "https://photos.google.com/new-fail-2"},
+		},
+		downloadedData: rawJPEG,
+	}
 
+	visionSvc := &mockVisionService{
+		analyzeResultFunc: func(ctx context.Context, img []byte) (*vision.AnalysisResult, error) {
+			return nil, errors.New("HTTP 500: llama-server process has terminated: unknown model architecture: 'mllama'")
+		},
+	}
+	reporter := &mockIssueReporter{}
+	m := metrics.NewMetrics()
 
+	exitCode := Run(context.Background(), "https://photos.app.goo.gl/album", tempDir, photoSvc, visionSvc, store, reporter, m, 5)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 when all newly attempted photos fail vision analysis, got %d", exitCode)
+	}
 
+	// Verify failure issue was still reported for 0 synced photos
+	if reporter.createCalls.Load() != 1 {
+		t.Fatalf("expected 1 failure issue created, got %d", reporter.createCalls.Load())
+	}
+	if reporter.lastReport.Stage != "Photo Processing - 0 Synced" {
+		t.Errorf("expected stage 'Photo Processing - 0 Synced', got %q", reporter.lastReport.Stage)
+	}
 
+	// Verify catalog.json was still generated from the existing .proto.bin files on disk
+	catalogPath := filepath.Join(tempDir, "catalog.json")
+	catalogBytes, err := os.ReadFile(catalogPath)
+	if err != nil {
+		t.Fatalf("expected catalog.json to be generated from existing .proto.bin files even when new photos fail vision analysis: %v", err)
+	}
 
-
-
-
-
-
+	var catalog []storage.CatalogArtwork
+	if err := json.Unmarshal(catalogBytes, &catalog); err != nil {
+		t.Fatalf("failed to unmarshal catalog.json: %v", err)
+	}
+	if len(catalog) != 2 {
+		t.Fatalf("expected 2 existing artworks in catalog.json, got %d", len(catalog))
+	}
+	if catalog[0].ID != "existing-art-2" || catalog[1].ID != "existing-art-1" {
+		t.Errorf("expected reverse-chronological catalog [existing-art-2, existing-art-1], got [%s, %s]", catalog[0].ID, catalog[1].ID)
+	}
+}
