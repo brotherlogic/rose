@@ -190,6 +190,100 @@ func TestCreateFailureIssue_Success(t *testing.T) {
 			t.Errorf("expected body to contain %q, but body was:\n%s", expectedSubstring, bodyStr)
 		}
 	}
+
+	if strings.Contains(bodyStr, "#### Metadata Generation Failures") {
+		t.Errorf("expected body to omit '#### Metadata Generation Failures' when MetadataFailures is empty, but body was:\n%s", bodyStr)
+	}
+}
+
+func TestCreateFailureIssue_MetadataFailures(t *testing.T) {
+	var capturedPayload map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read body: %v", err)
+		}
+		if err := json.Unmarshal(bodyBytes, &capturedPayload); err != nil {
+			t.Fatalf("failed to unmarshal request body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 12346, "title": "Syncer failed"}`))
+	}))
+	defer server.Close()
+
+	client := github.NewClient("test-token",
+		github.WithBaseURL(server.URL),
+		github.WithRepository("brotherlogic/rose"),
+		github.WithHTTPClient(server.Client()),
+	)
+
+	ts := time.Date(2026, 10, 19, 16, 0, 0, 0, time.UTC)
+	rawWithTripleBackticks := "```json\n{\"title\": \"Autumn Study\", \"description\": \"A vibrant canvas.\"}\n```"
+	rawWithQuadBackticks := "````markdown\n```json\n{\"title\": \"Nested\"}\n```\n````"
+
+	report := github.FailureReport{
+		Stage:            "Metadata Generation",
+		Timestamp:        ts,
+		Error:            errors.New("metadata generation failed for 3 photo(s)"),
+		PhotosFetched:    10,
+		PhotosAttempted:  3,
+		PhotosSuccessful: 1,
+		LogSummary:       "3 photos failed vision metadata generation",
+		MetadataFailures: []github.MetadataFailure{
+			{
+				PhotoID:   "photo-101",
+				Phase:     "Phase 1: New Ingestion",
+				Model:     "qwen2.5vl:32b",
+				Reason:    `curatorial rule violation: prohibited word "vibrant"`,
+				RawOutput: rawWithTripleBackticks,
+			},
+			{
+				PhotoID:   "photo-202",
+				Phase:     "Phase 2: Backfill",
+				Model:     "qwen2.5vl:32b",
+				Reason:    "vision service HTTP 500: internal error",
+				RawOutput: "",
+			},
+			{
+				PhotoID:   "photo-303",
+				Phase:     "Phase 2: Backfill",
+				Model:     "qwen2.5vl:32b",
+				Reason:    "no valid json object found",
+				RawOutput: rawWithQuadBackticks,
+			},
+		},
+	}
+
+	if err := client.CreateFailureIssue(context.Background(), report); err != nil {
+		t.Fatalf("unexpected error creating failure issue: %v", err)
+	}
+
+	bodyStr, ok := capturedPayload["body"].(string)
+	if !ok {
+		t.Fatalf("expected string body, got %T", capturedPayload["body"])
+	}
+
+	expectedSubstrings := []string{
+		"#### Metadata Generation Failures",
+		"`photo-101`",
+		"Phase 1: New Ingestion",
+		"`qwen2.5vl:32b`",
+		`curatorial rule violation: prohibited word "vibrant"`,
+		"````\n" + rawWithTripleBackticks + "\n````",
+		"`photo-202`",
+		"Phase 2: Backfill",
+		"vision service HTTP 500: internal error",
+		"N/A (no completion payload returned by model)",
+		"`photo-303`",
+		"`````\n" + rawWithQuadBackticks + "\n`````",
+	}
+
+	for _, expected := range expectedSubstrings {
+		if !strings.Contains(bodyStr, expected) {
+			t.Errorf("expected body to contain %q, but body was:\n%s", expected, bodyStr)
+		}
+	}
 }
 
 func TestCreateFailureIssue_HTTPError(t *testing.T) {
