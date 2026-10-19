@@ -13,6 +13,10 @@ on:
 jobs:
   enable-automerge:
     runs-on: ubuntu-latest
+    if: >-
+      contains(fromJSON('["brotherlogic", "brotherlogic-automation"]'), github.actor) ||
+      contains(fromJSON('["OWNER", "COLLABORATOR", "MEMBER"]'), github.event.pull_request.author_association) ||
+      contains(fromJSON('["OWNER", "COLLABORATOR", "MEMBER"]'), github.event.review.author_association)
     steps:
       - name: Enable Auto-Merge for PR
         env:
@@ -32,6 +36,20 @@ jobs:
 
           if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
             echo "No associated pull request found. Skipping."
+            exit 0
+          fi
+
+          PR_INFO=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json author,headRepositoryOwner)
+          PR_AUTHOR=$(echo "$PR_INFO" | jq -r '.author.login')
+          HEAD_OWNER=$(echo "$PR_INFO" | jq -r '.headRepositoryOwner.login')
+
+          if [ "$PR_AUTHOR" != "brotherlogic" ] && [ "$PR_AUTHOR" != "brotherlogic-automation" ]; then
+            echo "Untrusted PR author '$PR_AUTHOR'. Skipping auto-merge."
+            exit 0
+          fi
+
+          if [ "$HEAD_OWNER" != "brotherlogic" ]; then
+            echo "Untrusted head repository owner '$HEAD_OWNER'. Skipping auto-merge."
             exit 0
           fi
 
