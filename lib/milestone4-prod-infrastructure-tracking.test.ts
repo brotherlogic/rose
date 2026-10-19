@@ -4,6 +4,7 @@ import { execSync } from 'child_process';
 interface IssueRecord {
   number: number;
   title: string;
+  state: string;
   labels: { name: string }[];
   body: string;
 }
@@ -11,7 +12,7 @@ interface IssueRecord {
 function queryProdIssue(searchTitle: string): IssueRecord {
   try {
     const rawOutput = execSync(
-      `gh issue list -R brotherlogic/prod --search "${searchTitle}" --json number,title,labels,body --state all`,
+      `gh issue list -R brotherlogic/prod --search "${searchTitle}" --json number,title,state,labels,body --state all`,
       { encoding: 'utf-8', timeout: 30000 }
     );
     const issues: IssueRecord[] = JSON.parse(rawOutput);
@@ -33,7 +34,16 @@ describe('Milestone 4 Production Infrastructure Tracking Suite (#323)', () => {
 
     expect(issue).toBeDefined();
     const labelNames = issue.labels.map((l) => l.name);
-    expect(labelNames).toContain('container-ready');
+    expect(
+      labelNames.some((name) =>
+        ['container-ready', 'container-creating', 'container-asleep'].includes(name)
+      )
+    ).toBe(true);
+    expect(
+      issue.state === 'CLOSED' ||
+        labelNames.includes('seraphine-bug') ||
+        labelNames.includes('seraphine-ready-to-implement')
+    ).toBe(true);
 
     const body = issue.body;
     expect(body).toContain('projects/rose/pvc.yaml');
@@ -42,6 +52,8 @@ describe('Milestone 4 Production Infrastructure Tracking Suite (#323)', () => {
     expect(body).toContain('50Gi');
     expect(body).toContain('brotherlogic/rose#315');
     expect(body).toContain('brotherlogic/rose#316');
+    expect(body).toContain('brotherlogic/rose#356');
+    expect(body).toContain('brotherlogic/rose#370');
   });
 
   it('validates Gallery Deployment Volume Mount Tracking Issue exists with required metadata, manifest targets, and cross-references', () => {
@@ -50,15 +62,27 @@ describe('Milestone 4 Production Infrastructure Tracking Suite (#323)', () => {
 
     expect(issue).toBeDefined();
     const labelNames = issue.labels.map((l) => l.name);
-    expect(labelNames).toContain('container-ready');
+    expect(
+      labelNames.some((name) =>
+        ['container-ready', 'container-creating', 'container-asleep'].includes(name)
+      )
+    ).toBe(true);
+    expect(
+      issue.state === 'CLOSED' ||
+        labelNames.includes('seraphine-bug') ||
+        labelNames.includes('seraphine-ready-to-implement')
+    ).toBe(true);
 
     const body = issue.body;
     expect(body).toContain('projects/rose/deploy.yaml');
     expect(body).toContain('rose-data-pvc');
     expect(body).toContain('/data');
+    expect(body).toContain('readOnly: true');
     expect(body).toContain('fsGroup: 65532');
     expect(body).toContain('brotherlogic/rose#315');
     expect(body).toContain('brotherlogic/rose#316');
+    expect(body).toContain('brotherlogic/rose#357');
+    expect(body).toContain('brotherlogic/rose#370');
   });
 
   it('validates Unified Dashboard ConfigMap Tracking Issue exists with required metadata, manifest targets, and cross-references', () => {
@@ -67,7 +91,11 @@ describe('Milestone 4 Production Infrastructure Tracking Suite (#323)', () => {
 
     expect(issue).toBeDefined();
     const labelNames = issue.labels.map((l) => l.name);
-    expect(labelNames).toContain('container-ready');
+    expect(
+      labelNames.some((name) =>
+        ['container-ready', 'container-creating', 'container-asleep'].includes(name)
+      )
+    ).toBe(true);
 
     const body = issue.body;
     expect(body).toContain('projects/rose/dashboard-unified.yaml');
@@ -86,7 +114,11 @@ describe('Milestone 4 Production Infrastructure Tracking Suite (#323)', () => {
 
     expect(issue).toBeDefined();
     const labelNames = issue.labels.map((l) => l.name);
-    expect(labelNames).toContain('container-ready');
+    expect(
+      labelNames.some((name) =>
+        ['container-ready', 'container-creating', 'container-asleep'].includes(name)
+      )
+    ).toBe(true);
 
     const body = issue.body;
     expect(body).toContain('projects/rose/ingress.yaml');

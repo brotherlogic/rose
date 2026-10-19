@@ -174,6 +174,7 @@ describe('Rose Web Gallery Deployment and Service Manifests Turnup Specification
       expect(content).toContain('brotherlogic/rose#65');
       expect(content).toContain('brotherlogic/rose#312');
       expect(content).toContain('brotherlogic/rose#350');
+      expect(content).toContain('brotherlogic/rose#370');
     });
 
     it('should include the Flux image policy comment marker for automated updates', () => {

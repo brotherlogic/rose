@@ -1,6 +1,6 @@
 # Specification: Rose Web Gallery Deployment and Service Manifests
 # Reference: brotherlogic/prod#974, brotherlogic/prod#1026
-# Parent Rose Specifications: brotherlogic/rose#30, brotherlogic/rose#63, brotherlogic/rose#64, brotherlogic/rose#65, brotherlogic/rose#67, brotherlogic/rose#312, brotherlogic/rose#350
+# Parent Rose Specifications: brotherlogic/rose#30, brotherlogic/rose#63, brotherlogic/rose#64, brotherlogic/rose#65, brotherlogic/rose#67, brotherlogic/rose#312, brotherlogic/rose#350, brotherlogic/rose#370
 # Turnup Contract:
 #   Repository: brotherlogic/prod
 #   File Path: projects/rose/deploy.yaml

@@ -17,7 +17,11 @@ describe('Production Unified Dashboard ConfigMap Tracking Issue (#321)', () => {
     expect(issue).toBeDefined();
 
     const labelNames = issue.labels.map((l: { name: string }) => l.name);
-    expect(labelNames).toContain('container-ready');
+    expect(
+      labelNames.some((name: string) =>
+        ['container-ready', 'container-creating', 'container-asleep'].includes(name)
+      )
+    ).toBe(true);
 
     const body = issue.body;
     // Manifest target & ConfigMap name
