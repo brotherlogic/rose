@@ -1855,6 +1855,7 @@ func TestBackfillMissingThumbnails_AlreadyHasThumbnail(t *testing.T) {
 		Medium:        "Oil on Canvas",
 		Description:   "Description",
 		ThemeId:       "Vintage",
+		ImagePath:     photoID + ".jpg",
 		ThumbnailPath: "thumbnails/" + photoID + ".webp",
 	})
 	if err != nil {
@@ -1882,6 +1883,18 @@ func TestBackfillMissingThumbnails_AlreadyHasThumbnail(t *testing.T) {
 	}
 	if visionSvc.callCount != 0 {
 		t.Errorf("expected no vision calls, got %d", visionSvc.callCount)
+	}
+
+	updatedProtoBytes, err := store.ReadArtworkProto(photoID)
+	if err != nil {
+		t.Fatalf("failed to read updated proto: %v", err)
+	}
+	var updatedArtwork gallery.Artwork
+	if err := proto.Unmarshal(updatedProtoBytes, &updatedArtwork); err != nil {
+		t.Fatalf("failed to unmarshal updated proto: %v", err)
+	}
+	if updatedArtwork.GetImagePath() != "images/"+photoID+".jpg" {
+		t.Errorf("expected repaired ImagePath %q, got %q", "images/"+photoID+".jpg", updatedArtwork.GetImagePath())
 	}
 
 	values, _ := gatherMetricValues(t, m)

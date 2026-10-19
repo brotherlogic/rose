@@ -427,14 +427,26 @@ func (s *Store) GenerateCatalog() error {
 			continue
 		}
 
+		id := pb.GetId()
+		if !s.HasImage(id) && !s.HasLegacyImage(id) {
+			log.Printf("warning: skipping orphaned artwork proto %s: missing image for id %q", name, id)
+			continue
+		}
+
+		imagePath := "images/" + id + ".jpg"
+		thumbnailPath := pb.GetThumbnailPath()
+		if s.HasThumbnail(id) || (thumbnailPath != "" && !strings.HasPrefix(thumbnailPath, "thumbnails/")) {
+			thumbnailPath = "thumbnails/" + id + ".webp"
+		}
+
 		artworks = append(artworks, CatalogArtwork{
-			ID:            pb.GetId(),
+			ID:            id,
 			Title:         pb.GetTitle(),
 			Description:   pb.GetDescription(),
 			ThemeID:       pb.GetThemeId(),
 			Timestamp:     pb.GetTimestamp(),
-			ImagePath:     pb.GetImagePath(),
-			ThumbnailPath: pb.GetThumbnailPath(),
+			ImagePath:     imagePath,
+			ThumbnailPath: thumbnailPath,
 			Medium:        pb.GetMedium(),
 		})
 	}

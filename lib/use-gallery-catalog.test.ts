@@ -120,6 +120,16 @@ describe('useGalleryCatalog Hook & Normalization Suite (#344)', () => {
       expect(normalizeMediaPath('  images/trimmed.jpg  ')).toBe('/data/images/trimmed.jpg');
     });
 
+    it('normalizes bare <id>.jpg image filenames to /data/images/<id>.jpg and bare <id>.webp to /data/thumbnails/<id>.webp', () => {
+      expect(normalizeMediaPath('AF1QipMMgSANgQO9t3rSDH7ALFTBkizu6iz-LHCW_R79.jpg')).toBe(
+        '/data/images/AF1QipMMgSANgQO9t3rSDH7ALFTBkizu6iz-LHCW_R79.jpg'
+      );
+      expect(normalizeMediaPath('  AF1QipPDF_AkW2XnwtEMyQ7_AUi1rC_MIeKgijyMPWdp.jpg  ')).toBe(
+        '/data/images/AF1QipPDF_AkW2XnwtEMyQ7_AUi1rC_MIeKgijyMPWdp.jpg'
+      );
+      expect(normalizeMediaPath('legacy-thumb.webp')).toBe('/data/thumbnails/legacy-thumb.webp');
+    });
+
     it('preserves paths already starting with / or http(s):// unchanged', () => {
       expect(normalizeMediaPath('/data/images/photo-123.jpg')).toBe('/data/images/photo-123.jpg');
       expect(normalizeMediaPath('/data/thumbnails/photo-123.webp')).toBe('/data/thumbnails/photo-123.webp');

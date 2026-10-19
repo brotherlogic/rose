@@ -317,46 +317,45 @@ func Run(ctx context.Context, albumURL, storagePath string, photoSvc PhotoServic
 			if store.HasImage(photo.ID) {
 				if store.HasThumbnail(photo.ID) {
 					log.Printf("Photo %s already processed, skipping", photo.ID)
-					continue
+				} else {
+					log.Printf("Photo %s already processed but missing thumbnail, backfilling thumbnail", photo.ID)
+					imgBytes, err := store.ReadImage(photo.ID)
+					if err != nil {
+						m.IncSyncErrors()
+						log.Printf("Error reading existing image for %s: %v", photo.ID, err)
+						errorCount++
+						continue
+					}
+
+					thumbBytes, err := thumbnail.GenerateThumbnail(imgBytes)
+					if err != nil {
+						m.IncSyncErrors()
+						log.Printf("Error generating thumbnail for %s: %v", photo.ID, err)
+						errorCount++
+						continue
+					}
+
+					if err := store.WriteThumbnail(photo.ID, thumbBytes); err != nil {
+						m.IncSyncErrors()
+						log.Printf("Error writing thumbnail %s: %v, aborting immediately", photo.ID, err)
+						reportFailure(reporter, github.FailureReport{
+							Stage:            "Storage Persistence",
+							Timestamp:        time.Now().UTC(),
+							Error:            err,
+							PhotosFetched:    fetchedCount,
+							PhotosAttempted:  attemptedCount,
+							PhotosSuccessful: successCount,
+							LogSummary:       fmt.Sprintf("error writing thumbnail %s: %v", photo.ID, err),
+						})
+						return 1
+					}
+
+					m.IncThumbnailsGenerated()
+					m.IncStoredThumbnails()
+					m.UpdateStorageBytes(storagePath)
 				}
 
-				log.Printf("Photo %s already processed but missing thumbnail, backfilling thumbnail", photo.ID)
-				imgBytes, err := store.ReadImage(photo.ID)
-				if err != nil {
-					m.IncSyncErrors()
-					log.Printf("Error reading existing image for %s: %v", photo.ID, err)
-					errorCount++
-					continue
-				}
-
-				thumbBytes, err := thumbnail.GenerateThumbnail(imgBytes)
-				if err != nil {
-					m.IncSyncErrors()
-					log.Printf("Error generating thumbnail for %s: %v", photo.ID, err)
-					errorCount++
-					continue
-				}
-
-				if err := store.WriteThumbnail(photo.ID, thumbBytes); err != nil {
-					m.IncSyncErrors()
-					log.Printf("Error writing thumbnail %s: %v, aborting immediately", photo.ID, err)
-					reportFailure(reporter, github.FailureReport{
-						Stage:            "Storage Persistence",
-						Timestamp:        time.Now().UTC(),
-						Error:            err,
-						PhotosFetched:    fetchedCount,
-						PhotosAttempted:  attemptedCount,
-						PhotosSuccessful: successCount,
-						LogSummary:       fmt.Sprintf("error writing thumbnail %s: %v", photo.ID, err),
-					})
-					return 1
-				}
-
-				m.IncThumbnailsGenerated()
-				m.IncStoredThumbnails()
-				m.UpdateStorageBytes(storagePath)
-
-				// Update artwork proto metadata with ThumbnailPath if needed.
+				// Update artwork proto metadata with ThumbnailPath and ImagePath if needed.
 				protoBytes, err := store.ReadArtworkProto(photo.ID)
 				if err == nil {
 					var artwork gallery.Artwork
