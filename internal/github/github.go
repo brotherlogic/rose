@@ -11,6 +11,15 @@ import (
 	"time"
 )
 
+// MetadataFailure captures per-photo diagnostic details when vision metadata generation fails.
+type MetadataFailure struct {
+	PhotoID   string
+	Phase     string
+	Model     string
+	Reason    string
+	RawOutput string
+}
+
 // FailureReport holds diagnostic details for a syncer failure run.
 type FailureReport struct {
 	Stage            string
@@ -20,6 +29,7 @@ type FailureReport struct {
 	PhotosAttempted  int
 	PhotosSuccessful int
 	LogSummary       string
+	MetadataFailures []MetadataFailure
 }
 
 // IssueReporter defines the interface for querying and reporting issues.
@@ -155,6 +165,30 @@ type createIssuePayload struct {
 	Assignees []string `json:"assignees"`
 }
 
+func maxConsecutiveBackticks(s string) int {
+	maxRun := 0
+	currentRun := 0
+	for _, r := range s {
+		if r == '`' {
+			currentRun++
+			if currentRun > maxRun {
+				maxRun = currentRun
+			}
+		} else {
+			currentRun = 0
+		}
+	}
+	return maxRun
+}
+
+func backtickFence(s string) string {
+	n := maxConsecutiveBackticks(s) + 1
+	if n < 4 {
+		n = 4
+	}
+	return strings.Repeat("`", n)
+}
+
 // CreateFailureIssue creates a new issue in GitHub labeled seraphine-bug and assigned to brotherlogic-automation.
 func (c *Client) CreateFailureIssue(ctx context.Context, report FailureReport) error {
 	reqCtx := ctx
@@ -187,6 +221,26 @@ func (c *Client) CreateFailureIssue(ctx context.Context, report FailureReport) e
 		report.PhotosSuccessful,
 		report.LogSummary,
 	)
+
+	if len(report.MetadataFailures) > 0 {
+		var sb strings.Builder
+		sb.WriteString(bodyContent)
+		sb.WriteString("\n\n#### Metadata Generation Failures\n")
+		for i, mf := range report.MetadataFailures {
+			sb.WriteString(fmt.Sprintf("\n##### %d. Photo `%s`\n", i+1, mf.PhotoID))
+			sb.WriteString(fmt.Sprintf("- **Photo ID**: `%s`\n", mf.PhotoID))
+			sb.WriteString(fmt.Sprintf("- **Sync Phase**: %s\n", mf.Phase))
+			sb.WriteString(fmt.Sprintf("- **Vision Model**: `%s`\n", mf.Model))
+			sb.WriteString(fmt.Sprintf("- **Failure / Validation Reason**: %s\n", mf.Reason))
+			if mf.RawOutput == "" {
+				sb.WriteString("- **Raw Model Output**: N/A (no completion payload returned by model)\n")
+			} else {
+				fence := backtickFence(mf.RawOutput)
+				sb.WriteString(fmt.Sprintf("- **Raw Model Output**:\n%s\n%s\n%s\n", fence, mf.RawOutput, fence))
+			}
+		}
+		bodyContent = strings.TrimRight(sb.String(), "\n")
+	}
 
 	payload := createIssuePayload{
 		Title:     "Syncer failed",
