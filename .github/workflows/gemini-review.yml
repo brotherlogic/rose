@@ -5,7 +5,7 @@ on:
 
 jobs:
   gemini-review:
-    if: github.event.issue.pull_request && contains(github.event.comment.body, '/gemini-review')
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '/gemini-review') && contains(fromJSON('["OWNER", "COLLABORATOR", "MEMBER"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
