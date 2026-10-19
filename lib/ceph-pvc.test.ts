@@ -54,6 +54,7 @@ describe('Ceph PersistentVolumeClaim Turnup Specification (#57)', () => {
       expect(content).toContain('brotherlogic/prod#1024');
       expect(content).toContain('brotherlogic/rose#312');
       expect(content).toContain('brotherlogic/rose#350');
+      expect(content).toContain('brotherlogic/rose#370');
     });
   });
 });

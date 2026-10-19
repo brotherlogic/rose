@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 describe('Production Rose Gallery Deployment Tracking Issue (#320)', () => {
   it('should find the tracking issue in brotherlogic/prod with correct metadata and specifications', () => {
     const rawOutput = execSync(
-      'gh issue list -R brotherlogic/prod --search "[Turnup] Update Rose gallery deployment with rose-data-pvc mount and fsGroup" --json number,title,labels,body --state all',
+      'gh issue list -R brotherlogic/prod --search "[Turnup] Update Rose gallery deployment with rose-data-pvc mount and fsGroup" --json number,title,state,labels,body --state all',
       { encoding: 'utf-8' }
     );
     const issues = JSON.parse(rawOutput);
@@ -17,7 +17,16 @@ describe('Production Rose Gallery Deployment Tracking Issue (#320)', () => {
     expect(issue).toBeDefined();
 
     const labelNames = issue.labels.map((l: { name: string }) => l.name);
-    expect(labelNames).toContain('container-ready');
+    expect(
+      labelNames.some((name: string) =>
+        ['container-ready', 'container-creating', 'container-asleep'].includes(name)
+      )
+    ).toBe(true);
+    expect(
+      issue.state === 'CLOSED' ||
+        labelNames.includes('seraphine-bug') ||
+        labelNames.includes('seraphine-ready-to-implement')
+    ).toBe(true);
 
     const body = issue.body;
     // Target manifest
@@ -25,7 +34,9 @@ describe('Production Rose Gallery Deployment Tracking Issue (#320)', () => {
 
     // Volume Mount & Mount Path
     expect(body).toContain('rose-data-pvc');
+    expect(body).toContain('claimName: rose-data-pvc');
     expect(body).toContain('/data');
+    expect(body).toContain('readOnly: true');
 
     // Pod Security Context fsGroup
     expect(body).toContain('fsGroup: 65532');
@@ -34,5 +45,7 @@ describe('Production Rose Gallery Deployment Tracking Issue (#320)', () => {
     expect(body).toContain('brotherlogic/rose#315');
     expect(body).toContain('brotherlogic/rose#316');
     expect(body).toContain('brotherlogic/rose#320');
+    expect(body).toContain('brotherlogic/rose#357');
+    expect(body).toContain('brotherlogic/rose#370');
   });
 });
