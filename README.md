@@ -2,7 +2,7 @@
 Automated Gallery Website
 
 ## Frontend
-The frontend is a static Next.js application built with Tailwind CSS v4 (`@import "tailwindcss";` in `app/globals.css`) and layered White Cube / Dark Luxury CSS custom properties (`@layer base`), with client-side catalog hydration via `/data/catalog.json`.
+The frontend is a static Next.js application built with Tailwind CSS v4 (`@import "tailwindcss";` in `app/globals.css`) and layered White Cube / Dark Luxury CSS custom properties (`@layer base`), with client-side catalog hydration via `/data/catalog.json` and dedicated `^~` Nginx prefix routes in `nginx.conf` for `/data/images/` and `/data/thumbnails/`.
 Run `npm run dev` to start the development server, or `npm run build` to generate the static export in `out/`.
 
 ### Components

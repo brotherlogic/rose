@@ -50,6 +50,18 @@ jobs:
             exit 1
           fi
 
+          echo "Validating existing artwork image and thumbnail return 200..."
+          docker exec test-gallery sh -c 'echo "img" > /data/images/test.jpg && echo "thumb" > /data/thumbnails/test.webp'
+          IMG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/data/images/test.jpg)
+          THUMB_OK_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/data/thumbnails/test.webp)
+          if [ "$IMG_STATUS" -ne 200 ] || [ "$THUMB_OK_STATUS" -ne 200 ]; then
+            echo "Artwork media serving failed: expected 200, got image=$IMG_STATUS thumbnail=$THUMB_OK_STATUS"
+            docker logs test-gallery || true
+            docker stop test-gallery || true
+            docker rm test-gallery || true
+            exit 1
+          fi
+
           echo "Validating missing thumbnail returns 404..."
           THUMB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/data/thumbnails/nonexistent.webp)
           if [ "$THUMB_STATUS" -ne 404 ]; then

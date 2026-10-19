@@ -70,8 +70,8 @@ fi
 
 # Structural validation of nginx.conf
 grep -q "location = /healthz" "${NGINX_CONF}" || (echo "ERROR: Missing /healthz location in nginx.conf" >&2 && exit 1)
-grep -q "location /data/images/" "${NGINX_CONF}" || (echo "ERROR: Missing /data/images/ location in nginx.conf" >&2 && exit 1)
-grep -q "location /data/thumbnails/" "${NGINX_CONF}" || (echo "ERROR: Missing /data/thumbnails/ location in nginx.conf" >&2 && exit 1)
+grep -q "location \^~ /data/images/" "${NGINX_CONF}" || (echo "ERROR: Missing ^~ /data/images/ location in nginx.conf" >&2 && exit 1)
+grep -q "location \^~ /data/thumbnails/" "${NGINX_CONF}" || (echo "ERROR: Missing ^~ /data/thumbnails/ location in nginx.conf" >&2 && exit 1)
 grep -q "try_files \$uri =404;" "${NGINX_CONF}" || (echo "ERROR: Missing media 404 isolation try_files in nginx.conf" >&2 && exit 1)
 echo "PASS: Nginx configuration structure and syntax verified."
 
@@ -131,11 +131,23 @@ fi
 echo "PASS: Homepage branding ('ROSE SERAPHINE TUCKER') and curatorial landmarks ('The Permanent Collection', 'Editorial Statement', 'Biography') verified."
 
 # ------------------------------------------------------------------------------
-# Step 5: Validate media 404 isolation
+# Step 5: Validate media serving and 404 isolation
 # ------------------------------------------------------------------------------
-echo "--> Step 5: Validating media 404 isolation for nonexistent assets..."
+echo "--> Step 5: Validating media serving and 404 isolation for nonexistent assets..."
 
 if [ "${LIVE_SERVER}" = true ]; then
+  if [ -d "/data/images" ] && [ -w "/data/images" ] && [ -d "/data/thumbnails" ] && [ -w "/data/thumbnails" ]; then
+    echo "img" > /data/images/verify-m3-test.jpg
+    echo "thumb" > /data/thumbnails/verify-m3-test.webp
+    IMG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -m 2 "${TARGET_HOST}/data/images/verify-m3-test.jpg")
+    THUMB_OK_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -m 2 "${TARGET_HOST}/data/thumbnails/verify-m3-test.webp")
+    rm -f /data/images/verify-m3-test.jpg /data/thumbnails/verify-m3-test.webp
+    if [ "${IMG_STATUS}" != "200" ] || [ "${THUMB_OK_STATUS}" != "200" ]; then
+      echo "ERROR: Request for existing media returned image=${IMG_STATUS}, thumbnail=${THUMB_OK_STATUS} instead of 200" >&2
+      exit 1
+    fi
+    echo "PASS: Live media serving verified for /data/images/verify-m3-test.jpg and /data/thumbnails/verify-m3-test.webp (HTTP 200)."
+  fi
   MISSING_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -m 2 "${TARGET_HOST}/data/thumbnails/nonexistent.webp")
   MISSING_BODY=$(curl -s -m 2 "${TARGET_HOST}/data/thumbnails/nonexistent.webp")
   if [ "${MISSING_STATUS}" != "404" ]; then
@@ -148,11 +160,12 @@ if [ "${LIVE_SERVER}" = true ]; then
   fi
   echo "PASS: Live media 404 isolation verified (returned HTTP 404 without <!DOCTYPE html> fallback)."
 else
-  echo "INFO: Validating static media 404 isolation rules in nginx.conf..."
-  # Ensure /data/thumbnails/ uses try_files $uri =404; preventing index.html SPA fallback
-  grep -q "location /data/thumbnails/ {" "${NGINX_CONF}" || (echo "ERROR: Missing /data/thumbnails/ block" >&2 && exit 1)
+  echo "INFO: Validating static media serving and 404 isolation rules in nginx.conf..."
+  # Ensure /data/images/ and /data/thumbnails/ use ^~ prefix priority and try_files $uri =404;
+  grep -q "location \^~ /data/images/ {" "${NGINX_CONF}" || (echo "ERROR: Missing ^~ /data/images/ block" >&2 && exit 1)
+  grep -q "location \^~ /data/thumbnails/ {" "${NGINX_CONF}" || (echo "ERROR: Missing ^~ /data/thumbnails/ block" >&2 && exit 1)
   grep -q "try_files \$uri =404;" "${NGINX_CONF}" || (echo "ERROR: Missing try_files \$uri =404 in nginx.conf" >&2 && exit 1)
-  echo "PASS: Nginx media 404 isolation directives verified (preventing <!DOCTYPE html> fallback)."
+  echo "PASS: Nginx media ^~ routing and 404 isolation directives verified (preventing regex override and <!DOCTYPE html> fallback)."
 fi
 
 # ------------------------------------------------------------------------------
