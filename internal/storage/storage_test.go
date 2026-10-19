@@ -1117,6 +1117,9 @@ func TestGenerateCatalog_AggregationSortingAndAllFields(t *testing.T) {
 	}
 
 	for _, art := range artworks {
+		if err := store.WriteImage(art.GetId(), []byte("fake-jpeg-"+art.GetId())); err != nil {
+			t.Fatalf("failed to write image %s: %v", art.GetId(), err)
+		}
 		pbBytes, err := proto.Marshal(art)
 		if err != nil {
 			t.Fatalf("failed to marshal artwork %s: %v", art.GetId(), err)
@@ -1199,6 +1202,9 @@ func TestGenerateCatalog_SkipsCorruptedProto(t *testing.T) {
 		ThumbnailPath: "thumbnails/valid-art-1.webp",
 		Medium:        "Watercolor",
 	}
+	if err := store.WriteImage(validArt.GetId(), []byte("fake-jpeg")); err != nil {
+		t.Fatalf("failed to write valid artwork image: %v", err)
+	}
 	pbBytes, err := proto.Marshal(validArt)
 	if err != nil {
 		t.Fatalf("failed to marshal valid artwork: %v", err)
@@ -1242,6 +1248,104 @@ func TestGenerateCatalog_SkipsCorruptedProto(t *testing.T) {
 	}
 }
 
+func TestGenerateCatalog_SkipsOrphanedProtoAndNormalizesPaths(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewStore(tempDir)
+
+	// 1. Orphaned test protos without corresponding images (like photo1.jpg.proto.bin and photo2.jpg.proto.bin)
+	for _, orphanID := range []string{"photo1.jpg", "photo2.jpg", "orphan-no-image"} {
+		orphanPb, err := proto.Marshal(&gallerypb.Artwork{
+			Id:        orphanID,
+			Title:     "Orphaned Test Proto",
+			Timestamp: 1700000900,
+			ImagePath: orphanID + ".jpg",
+		})
+		if err != nil {
+			t.Fatalf("failed to marshal orphan %s: %v", orphanID, err)
+		}
+		if err := store.WriteArtworkProtoAtomic(orphanID, orphanPb); err != nil {
+			t.Fatalf("failed to write orphan proto %s: %v", orphanID, err)
+		}
+	}
+
+	// 2. Artwork with image in images/<id>.jpg and thumbnail in thumbnails/<id>.webp,
+	//    but legacy bare ImagePath ("<id>.jpg") and empty ThumbnailPath in proto
+	legacyPathID := "AF1QipMMgSANgQO9t3rSDH7ALFTBkizu6iz-LHCW_R79"
+	if err := store.WriteImage(legacyPathID, []byte("jpeg-bytes")); err != nil {
+		t.Fatalf("failed to write image for %s: %v", legacyPathID, err)
+	}
+	if err := store.WriteThumbnail(legacyPathID, []byte("webp-bytes")); err != nil {
+		t.Fatalf("failed to write thumbnail for %s: %v", legacyPathID, err)
+	}
+	legacyPathPb, err := proto.Marshal(&gallerypb.Artwork{
+		Id:            legacyPathID,
+		Title:         "Legacy Path Artwork",
+		Timestamp:     1700000800,
+		ImagePath:     legacyPathID + ".jpg",
+		ThumbnailPath: "",
+		Medium:        "Crayon on paper",
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal legacyPathID: %v", err)
+	}
+	if err := store.WriteArtworkProtoAtomic(legacyPathID, legacyPathPb); err != nil {
+		t.Fatalf("failed to write proto for %s: %v", legacyPathID, err)
+	}
+
+	// 3. Artwork with legacy root image (<basePath>/<id>.jpg via HasLegacyImage)
+	legacyRootID := "legacy-root-img"
+	if err := os.WriteFile(filepath.Join(tempDir, legacyRootID+".jpg"), []byte("root-jpeg"), 0644); err != nil {
+		t.Fatalf("failed to write legacy root image: %v", err)
+	}
+	legacyRootPb, err := proto.Marshal(&gallerypb.Artwork{
+		Id:        legacyRootID,
+		Title:     "Legacy Root Image Artwork",
+		Timestamp: 1700000700,
+		ImagePath: legacyRootID + ".jpg",
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal legacyRootID: %v", err)
+	}
+	if err := store.WriteArtworkProtoAtomic(legacyRootID, legacyRootPb); err != nil {
+		t.Fatalf("failed to write proto for %s: %v", legacyRootID, err)
+	}
+
+	if err := store.GenerateCatalog(); err != nil {
+		t.Fatalf("GenerateCatalog failed: %v", err)
+	}
+
+	catalogBytes, err := os.ReadFile(filepath.Join(tempDir, "catalog.json"))
+	if err != nil {
+		t.Fatalf("failed to read catalog.json: %v", err)
+	}
+
+	var parsed []CatalogArtwork
+	if err := json.Unmarshal(catalogBytes, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal catalog.json: %v", err)
+	}
+
+	if len(parsed) != 2 {
+		t.Fatalf("expected 2 valid artworks in catalog (orphans excluded), got %d: %+v", len(parsed), parsed)
+	}
+
+	if parsed[0].ID != legacyPathID {
+		t.Errorf("expected first artwork ID %q, got %q", legacyPathID, parsed[0].ID)
+	}
+	if parsed[0].ImagePath != "images/"+legacyPathID+".jpg" {
+		t.Errorf("expected normalized ImagePath %q, got %q", "images/"+legacyPathID+".jpg", parsed[0].ImagePath)
+	}
+	if parsed[0].ThumbnailPath != "thumbnails/"+legacyPathID+".webp" {
+		t.Errorf("expected normalized ThumbnailPath %q, got %q", "thumbnails/"+legacyPathID+".webp", parsed[0].ThumbnailPath)
+	}
+
+	if parsed[1].ID != legacyRootID {
+		t.Errorf("expected second artwork ID %q, got %q", legacyRootID, parsed[1].ID)
+	}
+	if parsed[1].ImagePath != "images/"+legacyRootID+".jpg" {
+		t.Errorf("expected normalized ImagePath %q, got %q", "images/"+legacyRootID+".jpg", parsed[1].ImagePath)
+	}
+}
+
 func TestGenerateCatalog_AtomicWriteLeavesNoTmpFiles(t *testing.T) {
 	tempDir := t.TempDir()
 	store := NewStore(tempDir)
@@ -1250,6 +1354,9 @@ func TestGenerateCatalog_AtomicWriteLeavesNoTmpFiles(t *testing.T) {
 		Id:        "atomic-art-1",
 		Title:     "Atomic Check",
 		Timestamp: 1700000900,
+	}
+	if err := store.WriteImage(art.GetId(), []byte("fake-jpeg")); err != nil {
+		t.Fatalf("failed to write artwork image: %v", err)
 	}
 	pbBytes, err := proto.Marshal(art)
 	if err != nil {

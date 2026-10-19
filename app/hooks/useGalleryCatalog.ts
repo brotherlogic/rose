@@ -41,6 +41,8 @@ function coerceTimestamp(rawTimestamp: unknown): number {
 /**
  * Normalizes media asset paths from catalog JSON payloads.
  * - Prefixes relative `images/...` and `thumbnails/...` paths with `/data/`.
+ * - Normalizes bare `<id>.jpg` image filenames to `/data/images/<id>.jpg`
+ *   and bare `<id>.webp` thumbnail filenames to `/data/thumbnails/<id>.webp`.
  * - Preserves paths already starting with `/` or `http(s)://`.
  */
 export function normalizeMediaPath(rawPath: unknown): string {
@@ -60,6 +62,15 @@ export function normalizeMediaPath(rawPath: unknown): string {
     trimmed.startsWith('https://')
   ) {
     return trimmed;
+  }
+  if (!trimmed.includes('/')) {
+    const lower = trimmed.toLowerCase();
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+      return `/data/images/${trimmed}`;
+    }
+    if (lower.endsWith('.webp')) {
+      return `/data/thumbnails/${trimmed}`;
+    }
   }
   return trimmed;
 }
