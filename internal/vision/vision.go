@@ -23,6 +23,28 @@ type AnalysisResult struct {
 	Theme       string `json:"theme"`
 }
 
+// AnalysisError wraps an error encountered during vision analysis with diagnostic context.
+type AnalysisError struct {
+	Model      string
+	RawContent string
+	Err        error
+}
+
+func (e *AnalysisError) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *AnalysisError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+
 // Config holds configuration parameters for the vision service.
 type Config struct {
 	Endpoint       string
@@ -178,7 +200,10 @@ type chatCompletionResponse struct {
 // Analyze performs multimodal vision analysis on the provided image payload with exponential backoff retries.
 func (s *Service) Analyze(ctx context.Context, img []byte) (*AnalysisResult, error) {
 	if len(img) == 0 {
-		return nil, errors.New("image payload cannot be empty")
+		return nil, &AnalysisError{
+			Model: s.cfg.Model,
+			Err:   errors.New("image payload cannot be empty"),
+		}
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -222,7 +247,10 @@ func (s *Service) Analyze(ctx context.Context, img []byte) (*AnalysisResult, err
 
 	bodyBytes, err := json.Marshal(reqPayload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal chat completion request: %w", err)
+		return nil, &AnalysisError{
+			Model: s.cfg.Model,
+			Err:   fmt.Errorf("failed to marshal chat completion request: %w", err),
+		}
 	}
 
 	endpoint := s.cfg.Endpoint
@@ -240,7 +268,10 @@ func (s *Service) Analyze(ctx context.Context, img []byte) (*AnalysisResult, err
 		req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 		if err != nil {
 			cancel()
-			return nil, fmt.Errorf("failed to create http request: %w", err)
+			return nil, &AnalysisError{
+				Model: s.cfg.Model,
+				Err:   fmt.Errorf("failed to create http request: %w", err),
+			}
 		}
 		req.Header.Set("Content-Type", "application/json")
 
@@ -285,7 +316,10 @@ func (s *Service) Analyze(ctx context.Context, img []byte) (*AnalysisResult, err
 		}
 
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			return nil, fmt.Errorf("vision inference request failed with status %d: %s", resp.StatusCode, string(respBody))
+			return nil, &AnalysisError{
+				Model: s.cfg.Model,
+				Err:   fmt.Errorf("vision inference request failed with status %d: %s", resp.StatusCode, string(respBody)),
+			}
 		}
 
 		if resp.StatusCode != http.StatusOK {
@@ -304,27 +338,44 @@ func (s *Service) Analyze(ctx context.Context, img []byte) (*AnalysisResult, err
 
 		var chatResp chatCompletionResponse
 		if err := json.Unmarshal(respBody, &chatResp); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal chat completion response: %w", err)
+			return nil, &AnalysisError{
+				Model: s.cfg.Model,
+				Err:   fmt.Errorf("failed to unmarshal chat completion response: %w", err),
+			}
 		}
 
 		if len(chatResp.Choices) == 0 {
-			return nil, errors.New("no completion choices returned by model")
+			return nil, &AnalysisError{
+				Model: s.cfg.Model,
+				Err:   errors.New("no completion choices returned by model"),
+			}
 		}
 
 		rawContent := chatResp.Choices[0].Message.Content
 		res, err := ParseAndValidateAnalysisResult(rawContent)
 		if err != nil {
-			return nil, err
+			return nil, &AnalysisError{
+				Model:      s.cfg.Model,
+				RawContent: rawContent,
+				Err:        err,
+			}
 		}
 
 		if err := ValidateCuratorialRules(res); err != nil {
-			return nil, err
+			return nil, &AnalysisError{
+				Model:      s.cfg.Model,
+				RawContent: rawContent,
+				Err:        err,
+			}
 		}
 
 		return res, nil
 	}
 
-	return nil, fmt.Errorf("vision inference retries exhausted: %w", lastErr)
+	return nil, &AnalysisError{
+		Model: s.cfg.Model,
+		Err:   fmt.Errorf("vision inference retries exhausted: %w", lastErr),
+	}
 }
 
 // AnalyzeImage delegates to Analyze and returns (description, theme, nil) for backward compatibility.
