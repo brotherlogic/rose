@@ -122,6 +122,9 @@ export function normalizeCatalogArtwork(raw: unknown): gallery.IArtwork | null {
   const normalizedThumbnail = normalizeMediaPath(rawThumbnailPath);
   const thumbnailPath = normalizedThumbnail || imagePath || '/placeholder.svg';
 
+  const isRepresentative =
+    item.isRepresentative === true || item.is_representative === true;
+
   return {
     id,
     title: rawTitle.trim() || 'Untitled',
@@ -131,8 +134,13 @@ export function normalizeCatalogArtwork(raw: unknown): gallery.IArtwork | null {
     timestamp: coerceTimestamp(item.timestamp),
     imagePath,
     thumbnailPath,
+    ...(isRepresentative ? { isRepresentative: true } : {}),
   };
 }
+
+let inFlightCatalogPromise: Promise<gallery.IArtwork[] | null> | null = null;
+let inFlightController: AbortController | null = null;
+let activeCatalogSubscribers = 0;
 
 /**
  * Client-side catalog hydration hook.
@@ -151,48 +159,66 @@ export function useGalleryCatalog(
       return;
     }
 
-    const controller = new AbortController();
     let isCancelled = false;
+    activeCatalogSubscribers += 1;
 
-    async function fetchCatalog() {
-      try {
-        const response = await fetch(CATALOG_ENDPOINT, {
-          cache: 'no-store',
-          signal: controller.signal,
-        });
+    if (!inFlightCatalogPromise) {
+      const controller = new AbortController();
+      inFlightController = controller;
 
-        if (!response || !response.ok) {
-          return;
-        }
+      inFlightCatalogPromise = (async (): Promise<gallery.IArtwork[] | null> => {
+        try {
+          const response = await fetch(CATALOG_ENDPOINT, {
+            cache: 'no-store',
+            signal: controller.signal,
+          });
 
-        const payload: unknown = await response.json();
-        if (!Array.isArray(payload)) {
-          return;
-        }
-
-        const validArtworks: gallery.IArtwork[] = [];
-        for (const entry of payload) {
-          const normalized = normalizeCatalogArtwork(entry);
-          if (normalized !== null) {
-            validArtworks.push(normalized);
+          if (!response || !response.ok) {
+            return null;
           }
-        }
 
-        if (!isCancelled && validArtworks.length > 0) {
-          setArtworks(validArtworks);
-          setIsHydrated(true);
+          const payload: unknown = await response.json();
+          if (!Array.isArray(payload)) {
+            return null;
+          }
+
+          const validArtworks: gallery.IArtwork[] = [];
+          for (const entry of payload) {
+            const normalized = normalizeCatalogArtwork(entry);
+            if (normalized !== null) {
+              validArtworks.push(normalized);
+            }
+          }
+
+          return validArtworks.length > 0 ? validArtworks : null;
+        } catch {
+          // Gracefully ignore AbortError, network failures, or malformed JSON
+          // and retain the static initialArtworks baseline.
+          return null;
         }
-      } catch {
-        // Gracefully ignore AbortError, network failures, or malformed JSON
-        // and retain the static initialArtworks baseline.
-      }
+      })().finally(() => {
+        inFlightCatalogPromise = null;
+        inFlightController = null;
+      });
     }
 
-    void fetchCatalog();
+    const currentPromise = inFlightCatalogPromise;
+
+    void currentPromise.then((validArtworks) => {
+      if (!isCancelled && validArtworks && validArtworks.length > 0) {
+        setArtworks(validArtworks);
+        setIsHydrated(true);
+      }
+    });
 
     return () => {
       isCancelled = true;
-      controller.abort();
+      activeCatalogSubscribers = Math.max(0, activeCatalogSubscribers - 1);
+      if (activeCatalogSubscribers === 0) {
+        inFlightController?.abort();
+        inFlightController = null;
+        inFlightCatalogPromise = null;
+      }
     };
   }, []);
 

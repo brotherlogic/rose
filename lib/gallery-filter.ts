@@ -16,6 +16,11 @@ export interface MovementCount {
   count: number;
 }
 
+export interface CatalogArtwork extends gallery.IArtwork {
+  isRepresentative?: boolean;
+  is_representative?: boolean;
+}
+
 interface HasToNumber {
   toNumber: () => number;
 }
@@ -177,4 +182,119 @@ export function filterAndSortArtworks(
   });
 
   return filtered;
+}
+
+/**
+ * Computes the deterministic weighted additive curatorial score for an artwork
+ * matching the backend catalog generation heuristic.
+ */
+export function scoreArtwork(
+  artwork: gallery.IArtwork,
+  dominantCanonicalMovement: string
+): number {
+  let score = 0;
+  const rawTheme = (getArtworkTheme(artwork) || '').trim();
+  const title = (artwork.title || '').trim();
+  const description = (artwork.description || '').trim();
+  const medium = (artwork.medium || '').trim();
+  const imagePath = (artwork.imagePath || '').trim();
+  const thumbnailPath = (artwork.thumbnailPath || '').trim();
+
+  if (dominantCanonicalMovement !== '' && rawTheme === dominantCanonicalMovement) {
+    score += 40;
+  }
+  if (rawTheme !== '' && rawTheme.toLowerCase() !== 'early works') {
+    score += 25;
+  }
+  if (title !== '' && title.toLowerCase() !== 'untitled') {
+    score += 20;
+  }
+  if (description !== '') {
+    score += 20;
+  }
+  if (medium !== '' && medium.toLowerCase() !== 'mixed media') {
+    score += 15;
+  }
+  if (
+    imagePath !== '' &&
+    imagePath !== '/placeholder.svg' &&
+    thumbnailPath !== '' &&
+    thumbnailPath !== '/placeholder.svg'
+  ) {
+    score += 10;
+  }
+
+  return score;
+}
+
+/**
+ * Selects the single representative artwork for the archive.
+ * - Returns null when artworks is empty.
+ * - Honors a single flagged artwork (`isRepresentative: true` or `is_representative: true`).
+ * - Falls back to deterministic weighted additive scoring (with chronological/ID tie-breaking)
+ *   when zero or multiple artworks are flagged.
+ */
+export function selectRepresentativeArtwork(
+  artworks: gallery.IArtwork[]
+): gallery.IArtwork | null {
+  if (!artworks || artworks.length === 0) {
+    return null;
+  }
+
+  const movementCounts = new Map<string, number>();
+  for (const artwork of artworks) {
+    const rawTheme = (getArtworkTheme(artwork) || '').trim();
+    if (rawTheme) {
+      movementCounts.set(rawTheme, (movementCounts.get(rawTheme) || 0) + 1);
+    }
+  }
+
+  let dominantCanonicalMovement = '';
+  let maxCount = 0;
+  for (const movement of CANONICAL_MOVEMENTS) {
+    const count = movementCounts.get(movement) || 0;
+    if (count > maxCount) {
+      maxCount = count;
+      dominantCanonicalMovement = movement;
+    }
+  }
+
+  const flagged = artworks.filter(
+    (a) =>
+      (a as CatalogArtwork).isRepresentative === true ||
+      (a as CatalogArtwork).is_representative === true
+  );
+
+  if (flagged.length === 1) {
+    return flagged[0];
+  }
+
+  const candidates = flagged.length > 0 ? [...flagged] : [...artworks];
+
+  candidates.sort((a, b) => {
+    const scoreA = scoreArtwork(a, dominantCanonicalMovement);
+    const scoreB = scoreArtwork(b, dominantCanonicalMovement);
+    if (scoreA !== scoreB) {
+      return scoreB - scoreA;
+    }
+
+    const timeA = getTimestamp(a.timestamp);
+    const timeB = getTimestamp(b.timestamp);
+    const validA = timeA > 0;
+    const validB = timeB > 0;
+
+    if (!validA && validB) {
+      return 1;
+    }
+    if (validA && !validB) {
+      return -1;
+    }
+    if (validA && validB && timeA !== timeB) {
+      return timeB - timeA;
+    }
+
+    return (a.id || '').localeCompare(b.id || '');
+  });
+
+  return candidates[0] || null;
 }
