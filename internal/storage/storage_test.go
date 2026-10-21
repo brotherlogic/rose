@@ -1164,7 +1164,7 @@ func TestGenerateCatalog_AggregationSortingAndAllFields(t *testing.T) {
 		}
 	}
 
-	// Verify all 8 snake_case keys are explicitly present in raw JSON maps, even when empty
+	// Verify all 9 snake_case keys are explicitly present in raw JSON maps, even when empty
 	var rawMaps []map[string]interface{}
 	if err := json.Unmarshal(catalogBytes, &rawMaps); err != nil {
 		t.Fatalf("failed to unmarshal catalog.json into raw maps: %v", err)
@@ -1178,6 +1178,7 @@ func TestGenerateCatalog_AggregationSortingAndAllFields(t *testing.T) {
 		"image_path",
 		"thumbnail_path",
 		"medium",
+		"is_representative",
 	}
 	for idx, itemMap := range rawMaps {
 		for _, key := range requiredKeys {
@@ -1400,6 +1401,313 @@ func TestGenerateCatalog_AtomicWriteLeavesNoTmpFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateCatalog_RepresentativeScoringAndDesignation(t *testing.T) {
+	t.Run("marks single highest-scoring artwork as representative with dominant movement bonus", func(t *testing.T) {
+		tempDir := t.TempDir()
+		store := NewStore(tempDir)
+
+		// "Kinetic Scribblism" appears twice (dominant canonical movement), while "Monochrome Nihilism" appears once.
+		artworks := []*gallerypb.Artwork{
+			{
+				Id:            "art-dominant-partial",
+				Title:         "Untitled", // no +20 title bonus
+				Description:   "",         // no +20 description bonus
+				ThemeId:       "Kinetic Scribblism",
+				Timestamp:     1700000500,
+				ImagePath:     "images/art-dominant-partial.jpg",
+				ThumbnailPath: "thumbnails/art-dominant-partial.webp",
+				Medium:        "Mixed Media", // no +15 medium bonus
+			},
+			{
+				Id:            "art-dominant-complete",
+				Title:         "Velocity Study IV",
+				Description:   "Rapid graphite spirals across torn paper.",
+				ThemeId:       "Kinetic Scribblism",
+				Timestamp:     1700000300,
+				ImagePath:     "images/art-dominant-complete.jpg",
+				ThumbnailPath: "thumbnails/art-dominant-complete.webp",
+				Medium:        "Graphite and wax crayon on paper",
+			},
+			{
+				Id:            "art-nondominant-complete",
+				Title:         "Void Study I",
+				Description:   "Dense black pastel layering.",
+				ThemeId:       "Monochrome Nihilism",
+				Timestamp:     1700000900, // newer, but lacks +40 dominant movement bonus
+				ImagePath:     "images/art-nondominant-complete.jpg",
+				ThumbnailPath: "thumbnails/art-nondominant-complete.webp",
+				Medium:        "Charcoal on board",
+			},
+		}
+
+		for _, art := range artworks {
+			if err := store.WriteImage(art.GetId(), []byte("jpeg-"+art.GetId())); err != nil {
+				t.Fatalf("failed to write image %s: %v", art.GetId(), err)
+			}
+			if err := store.WriteThumbnail(art.GetId(), []byte("webp-"+art.GetId())); err != nil {
+				t.Fatalf("failed to write thumbnail %s: %v", art.GetId(), err)
+			}
+			pbBytes, err := proto.Marshal(art)
+			if err != nil {
+				t.Fatalf("failed to marshal %s: %v", art.GetId(), err)
+			}
+			if err := store.WriteArtworkProtoAtomic(art.GetId(), pbBytes); err != nil {
+				t.Fatalf("failed to write proto %s: %v", art.GetId(), err)
+			}
+		}
+
+		if err := store.GenerateCatalog(); err != nil {
+			t.Fatalf("GenerateCatalog failed: %v", err)
+		}
+
+		catalogBytes, err := os.ReadFile(filepath.Join(tempDir, "catalog.json"))
+		if err != nil {
+			t.Fatalf("failed to read catalog.json: %v", err)
+		}
+
+		var rawItems []map[string]interface{}
+		if err := json.Unmarshal(catalogBytes, &rawItems); err != nil {
+			t.Fatalf("failed to unmarshal catalog.json: %v", err)
+		}
+
+		if len(rawItems) != 3 {
+			t.Fatalf("expected 3 artworks, got %d", len(rawItems))
+		}
+
+		repCount := 0
+		for _, item := range rawItems {
+			id, _ := item["id"].(string)
+			isRep, ok := item["is_representative"].(bool)
+			if !ok {
+				t.Errorf("artwork %q missing boolean is_representative field: %v", id, item["is_representative"])
+				continue
+			}
+			if id == "art-dominant-complete" {
+				if !isRep {
+					t.Errorf("expected art-dominant-complete to have is_representative=true, got false")
+				}
+				repCount++
+			} else if isRep {
+				t.Errorf("expected %q to have is_representative=false, got true", id)
+				repCount++
+			}
+		}
+		if repCount != 1 {
+			t.Errorf("expected exactly 1 representative artwork, got %d", repCount)
+		}
+	})
+
+	t.Run("all unannotated/default artworks tie-break by positive timestamp DESC then id ASC", func(t *testing.T) {
+		tempDir := t.TempDir()
+		store := NewStore(tempDir)
+
+		artworks := []*gallerypb.Artwork{
+			{
+				Id:        "unannotated-zero-ts",
+				Title:     "Untitled",
+				ThemeId:   "Early Works",
+				Timestamp: 0,
+				Medium:    "Mixed Media",
+			},
+			{
+				Id:        "unannotated-b",
+				Title:     "   untitled  ",
+				ThemeId:   "  early works ",
+				Timestamp: 1700000100,
+				Medium:    "  mixed media ",
+			},
+			{
+				Id:        "unannotated-a",
+				Title:     "",
+				ThemeId:   "",
+				Timestamp: 1700000100,
+				Medium:    "",
+			},
+		}
+
+		for _, art := range artworks {
+			if err := store.WriteImage(art.GetId(), []byte("jpeg-"+art.GetId())); err != nil {
+				t.Fatalf("failed to write image %s: %v", art.GetId(), err)
+			}
+			pbBytes, err := proto.Marshal(art)
+			if err != nil {
+				t.Fatalf("failed to marshal %s: %v", art.GetId(), err)
+			}
+			if err := store.WriteArtworkProtoAtomic(art.GetId(), pbBytes); err != nil {
+				t.Fatalf("failed to write proto %s: %v", art.GetId(), err)
+			}
+		}
+
+		if err := store.GenerateCatalog(); err != nil {
+			t.Fatalf("GenerateCatalog failed: %v", err)
+		}
+
+		catalogBytes, err := os.ReadFile(filepath.Join(tempDir, "catalog.json"))
+		if err != nil {
+			t.Fatalf("failed to read catalog.json: %v", err)
+		}
+
+		var rawItems []map[string]interface{}
+		if err := json.Unmarshal(catalogBytes, &rawItems); err != nil {
+			t.Fatalf("failed to unmarshal catalog.json: %v", err)
+		}
+
+		for _, item := range rawItems {
+			id, _ := item["id"].(string)
+			isRep, ok := item["is_representative"].(bool)
+			if !ok {
+				t.Errorf("artwork %q missing boolean is_representative field", id)
+				continue
+			}
+			wantRep := id == "unannotated-a"
+			if isRep != wantRep {
+				t.Errorf("artwork %q: expected is_representative=%v, got %v", id, wantRep, isRep)
+			}
+		}
+	})
+}
+
+func TestDesignateRepresentativeArtwork_ScoringAndTieBreaking(t *testing.T) {
+	t.Run("canonical movement tie broken by earliest Phase I-V chronology", func(t *testing.T) {
+		// Tie between "Found Object Assemblage" (index 3) and "Domestic Destructionism" (index 1).
+		// "Domestic Destructionism" should win as dominantMovement.
+		artworks := []CatalogArtwork{
+			{
+				ID:            "art-found",
+				Title:         "Assemblage One",
+				Description:   "Found objects",
+				ThemeID:       "Found Object Assemblage",
+				Timestamp:     1700000500,
+				ImagePath:     "images/art-found.jpg",
+				ThumbnailPath: "thumbnails/art-found.webp",
+				Medium:        "Cardboard and tape",
+			},
+			{
+				ID:            "art-domestic",
+				Title:         "Wall Intervention",
+				Description:   "Hallway markings",
+				ThemeID:       "Domestic Destructionism",
+				Timestamp:     1700000100, // older timestamp, but wins via +40 dominant movement bonus
+				ImagePath:     "images/art-domestic.jpg",
+				ThumbnailPath: "thumbnails/art-domestic.webp",
+				Medium:        "Permanent marker on drywall",
+			},
+		}
+
+		designateRepresentativeArtwork(artworks)
+
+		if !artworks[1].IsRepresentative {
+			t.Errorf("expected art-domestic (index 1) to be designated representative")
+		}
+		if artworks[0].IsRepresentative {
+			t.Errorf("expected art-found (index 0) not to be designated representative")
+		}
+	})
+
+	t.Run("curatorial completeness bonuses (+25 theme, +20 title, +20 description, +15 medium, +10 assets)", func(t *testing.T) {
+		// Test individual bonus contributions when no canonical movement is present:
+		// Candidate A: non-Early-Works custom theme (+25) = 25
+		// Candidate B: non-Untitled title (+20) + description (+20) = 40
+		// Candidate C: non-Untitled title (+20) + non-Mixed-Media medium (+15) + valid assets (+10) = 45
+		artworks := []CatalogArtwork{
+			{
+				ID:            "cand-a",
+				Title:         "Untitled",
+				Description:   "",
+				ThemeID:       "Custom Archival Study", // +25
+				Timestamp:     1700000300,
+				ImagePath:     "/placeholder.svg", // no +10
+				ThumbnailPath: "thumbnails/cand-a.webp",
+				Medium:        "Mixed Media",
+			},
+			{
+				ID:            "cand-b",
+				Title:         "Named Work",       // +20
+				Description:   "Detailed critique", // +20
+				ThemeID:       "Early Works",       // no +25
+				Timestamp:     1700000200,
+				ImagePath:     "images/cand-b.jpg",
+				ThumbnailPath: "/placeholder.svg", // no +10
+				Medium:        "mixed media",      // no +15
+			},
+			{
+				ID:            "cand-c",
+				Title:         "Named With Medium And Assets", // +20
+				Description:   "   ",                          // no +20
+				ThemeID:       "",                             // no +25
+				Timestamp:     1700000100,
+				ImagePath:     "images/cand-c.jpg",      // +10 (with valid thumbnail)
+				ThumbnailPath: "thumbnails/cand-c.webp", // +10
+				Medium:        "Oil pastel",             // +15
+			},
+		}
+
+		designateRepresentativeArtwork(artworks)
+
+		if !artworks[2].IsRepresentative {
+			t.Errorf("expected cand-c (score 45) to be representative, got false")
+		}
+		if artworks[0].IsRepresentative || artworks[1].IsRepresentative {
+			t.Errorf("expected cand-a and cand-b to have IsRepresentative=false")
+		}
+	})
+
+	t.Run("non-positive timestamps rank after positive timestamps and tie-break by ID ascending", func(t *testing.T) {
+		artworks := []CatalogArtwork{
+			{
+				ID:        "art-zero-ts",
+				Title:     "Same Score",
+				Timestamp: 0,
+			},
+			{
+				ID:        "art-negative-ts",
+				Title:     "Same Score",
+				Timestamp: -500,
+			},
+			{
+				ID:        "art-positive-ts",
+				Title:     "Same Score",
+				Timestamp: 100,
+			},
+		}
+
+		designateRepresentativeArtwork(artworks)
+
+		if !artworks[2].IsRepresentative {
+			t.Errorf("expected art-positive-ts to beat zero/negative timestamps")
+		}
+
+		// When all timestamps are <= 0, tie-break by ID ascending
+		nonPositiveOnly := []CatalogArtwork{
+			{
+				ID:        "art-z",
+				Title:     "Same Score",
+				Timestamp: 0,
+			},
+			{
+				ID:        "art-a",
+				Title:     "Same Score",
+				Timestamp: -10,
+			},
+		}
+
+		designateRepresentativeArtwork(nonPositiveOnly)
+
+		if !nonPositiveOnly[1].IsRepresentative {
+			t.Errorf("expected art-a to win ID tie-break when all timestamps are <= 0")
+		}
+		if nonPositiveOnly[0].IsRepresentative {
+			t.Errorf("expected art-z to have IsRepresentative=false")
+		}
+	})
+
+	t.Run("empty slice is a safe no-op", func(t *testing.T) {
+		var empty []CatalogArtwork
+		designateRepresentativeArtwork(empty)
+	})
+}
+
 
 
 
