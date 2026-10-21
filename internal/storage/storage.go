@@ -19,14 +19,106 @@ type Store struct {
 }
 
 type CatalogArtwork struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	Description   string `json:"description"`
-	ThemeID       string `json:"theme_id"`
-	Timestamp     int64  `json:"timestamp"`
-	ImagePath     string `json:"image_path"`
-	ThumbnailPath string `json:"thumbnail_path"`
-	Medium        string `json:"medium"`
+	ID               string `json:"id"`
+	Title            string `json:"title"`
+	Description      string `json:"description"`
+	ThemeID          string `json:"theme_id"`
+	Timestamp        int64  `json:"timestamp"`
+	ImagePath        string `json:"image_path"`
+	ThumbnailPath    string `json:"thumbnail_path"`
+	Medium           string `json:"medium"`
+	IsRepresentative bool   `json:"is_representative"`
+}
+
+var canonicalMovements = []string{
+	"The Crayon Period",
+	"Domestic Destructionism",
+	"Kinetic Scribblism",
+	"Found Object Assemblage",
+	"Monochrome Nihilism",
+}
+
+func scoreCatalogArtwork(a CatalogArtwork, dominantMovement string) int {
+	score := 0
+	theme := strings.TrimSpace(a.ThemeID)
+	title := strings.TrimSpace(a.Title)
+	desc := strings.TrimSpace(a.Description)
+	medium := strings.TrimSpace(a.Medium)
+	imgPath := strings.TrimSpace(a.ImagePath)
+	thumbPath := strings.TrimSpace(a.ThumbnailPath)
+
+	if dominantMovement != "" && theme == dominantMovement {
+		score += 40
+	}
+	if theme != "" && !strings.EqualFold(theme, "Early Works") {
+		score += 25
+	}
+	if title != "" && !strings.EqualFold(title, "Untitled") {
+		score += 20
+	}
+	if desc != "" {
+		score += 20
+	}
+	if medium != "" && !strings.EqualFold(medium, "Mixed Media") {
+		score += 15
+	}
+	if imgPath != "" && imgPath != "/placeholder.svg" && thumbPath != "" && thumbPath != "/placeholder.svg" {
+		score += 10
+	}
+	return score
+}
+
+func isBetterRepresentativeCandidate(a CatalogArtwork, scoreA int, b CatalogArtwork, scoreB int) bool {
+	if scoreA != scoreB {
+		return scoreA > scoreB
+	}
+	validA := a.Timestamp > 0
+	validB := b.Timestamp > 0
+	if validA != validB {
+		return validA
+	}
+	if validA && validB && a.Timestamp != b.Timestamp {
+		return a.Timestamp > b.Timestamp
+	}
+	return a.ID < b.ID
+}
+
+func designateRepresentativeArtwork(artworks []CatalogArtwork) {
+	if len(artworks) == 0 {
+		return
+	}
+
+	counts := make(map[string]int)
+	for _, a := range artworks {
+		theme := strings.TrimSpace(a.ThemeID)
+		if theme != "" {
+			counts[theme]++
+		}
+	}
+
+	dominantMovement := ""
+	maxCount := 0
+	for _, movement := range canonicalMovements {
+		if c := counts[movement]; c > maxCount {
+			maxCount = c
+			dominantMovement = movement
+		}
+	}
+
+	bestIdx := 0
+	bestScore := scoreCatalogArtwork(artworks[0], dominantMovement)
+	artworks[0].IsRepresentative = false
+
+	for i := 1; i < len(artworks); i++ {
+		artworks[i].IsRepresentative = false
+		score := scoreCatalogArtwork(artworks[i], dominantMovement)
+		if isBetterRepresentativeCandidate(artworks[i], score, artworks[bestIdx], bestScore) {
+			bestIdx = i
+			bestScore = score
+		}
+	}
+
+	artworks[bestIdx].IsRepresentative = true
 }
 
 func NewStore(basePath string) *Store {
@@ -457,6 +549,8 @@ func (s *Store) GenerateCatalog() error {
 		}
 		return artworks[i].ID < artworks[j].ID
 	})
+
+	designateRepresentativeArtwork(artworks)
 
 	payload, err := json.MarshalIndent(artworks, "", "  ")
 	if err != nil {
