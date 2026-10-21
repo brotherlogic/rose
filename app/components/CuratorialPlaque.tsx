@@ -5,8 +5,9 @@ import { gallery } from '@/lib/proto/gallery';
 
 export interface CuratorialPlaqueProps {
   artwork: gallery.IArtwork;
-  isCollapsed: boolean;
-  onToggleCollapse: () => void;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
+  variant?: 'full' | 'minimal';
 }
 
 interface HasToNumber {
@@ -22,7 +23,7 @@ function hasToNumber(val: unknown): val is HasToNumber {
   );
 }
 
-function formatCreationYear(timestamp?: unknown): string {
+export function formatCreationYear(timestamp?: unknown): string {
   if (timestamp === null || timestamp === undefined) {
     return 'Undated';
   }
@@ -51,21 +52,53 @@ function formatCreationYear(timestamp?: unknown): string {
 
 export default function CuratorialPlaque({
   artwork,
-  isCollapsed,
+  isCollapsed = false,
   onToggleCollapse,
+  variant = 'full',
 }: CuratorialPlaqueProps) {
   const title = artwork.title && artwork.title.trim().length > 0 ? artwork.title.trim() : 'Untitled';
   const year = formatCreationYear(artwork.timestamp);
   const medium =
     artwork.medium && artwork.medium.trim().length > 0 ? artwork.medium.trim() : 'Mixed Media';
+  const rawTheme = artwork.themeId || (artwork as { theme?: string }).theme;
   const movement =
-    artwork.themeId && artwork.themeId.trim().length > 0
-      ? artwork.themeId.trim()
+    rawTheme && rawTheme.trim().length > 0
+      ? rawTheme.trim()
       : 'Early Works';
   const critique =
     artwork.description && artwork.description.trim().length > 0
       ? artwork.description.trim()
       : 'Catalog description pending curatorial annotation.';
+
+  if (variant === 'minimal') {
+    return (
+      <aside
+        aria-label="Featured artwork curatorial plaque"
+        data-testid="minimal-curatorial-plaque"
+        className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] p-5 md:p-6 text-[var(--text-primary)]"
+      >
+        <div className="flex flex-col gap-1 min-w-0">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <h3 className="font-[family-name:var(--font-serif)] italic text-lg md:text-xl text-[var(--text-primary)] break-words">
+              {title}
+            </h3>
+            <span className="font-mono text-xs md:text-sm text-[var(--text-secondary)]">
+              ({year})
+            </span>
+          </div>
+          <p className="font-mono text-xs uppercase tracking-wider text-[var(--text-secondary)] break-words">
+            {medium}
+          </p>
+        </div>
+
+        <div className="mt-3">
+          <span className="inline-block font-mono text-xs uppercase tracking-wider border border-[var(--border-subtle)] bg-[var(--bg-primary)] text-[var(--text-secondary)] px-2.5 py-0.5 rounded-full break-words">
+            {movement}
+          </span>
+        </div>
+      </aside>
+    );
+  }
 
   if (isCollapsed) {
     return (

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import CuratorialPlaque from '../app/components/CuratorialPlaque';
+import CuratorialPlaque, { formatCreationYear } from '../app/components/CuratorialPlaque';
 import { gallery } from './proto/gallery';
 
 // Helper to recursively find elements by predicate in a React element tree
@@ -308,6 +308,98 @@ describe('Museum Curatorial Plaque Component Suite (#295)', () => {
       expect(toggleBtn).toBeDefined();
       toggleBtn?.props.onClick?.({ preventDefault: () => {} });
       expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Minimal Variant (#401)', () => {
+    it('exports formatCreationYear for direct reuse and testing', () => {
+      expect(typeof formatCreationYear).toBe('function');
+      expect(formatCreationYear(1712707200)).toBe('2024');
+      expect(formatCreationYear(0)).toBe('Undated');
+      expect(formatCreationYear(undefined)).toBe('Undated');
+    });
+
+    it('renders static minimal curatorial plaque with Title, UTC Creation Year, Medium, and Movement pill without critique or toggle button', () => {
+      const markup = renderToStaticMarkup(
+        React.createElement(CuratorialPlaque, {
+          artwork: mockArtwork,
+          variant: 'minimal',
+        })
+      );
+
+      expect(markup).toContain('aria-label="Featured artwork curatorial plaque"');
+      expect(markup).toContain('data-testid="minimal-curatorial-plaque"');
+      expect(markup).toContain('bg-[var(--bg-secondary)]');
+      expect(markup).toContain('border-[var(--border-subtle)]');
+      expect(markup).toContain('<h3');
+      expect(markup).toContain('Disintegration of Form in Yellow');
+      expect(markup).toContain('(2024)');
+      expect(markup).toContain('Wax crayon on reclaimed cardboard');
+      expect(markup).toContain('Monochrome Nihilism');
+
+      // Critique and expand/collapse buttons must be omitted
+      expect(markup).not.toContain('A study in material decay and existential resignation.');
+      expect(markup).not.toContain('Catalog description pending curatorial annotation.');
+      expect(markup).not.toContain('<button');
+      expect(markup).not.toContain('Collapse curatorial plaque');
+      expect(markup).not.toContain('Expand curatorial plaque');
+    });
+
+    it('applies curatorial fallbacks (Untitled, Undated, Mixed Media, Early Works) and supports legacy theme property in minimal mode', () => {
+      const markupFallback = renderToStaticMarkup(
+        React.createElement(CuratorialPlaque, {
+          artwork: {
+            id: 'artwork-empty',
+            title: '   ',
+            medium: '',
+            themeId: '  ',
+            timestamp: 0,
+            description: 'Should not appear',
+          },
+          variant: 'minimal',
+        })
+      );
+
+      expect(markupFallback).toContain('Untitled');
+      expect(markupFallback).toContain('(Undated)');
+      expect(markupFallback).toContain('Mixed Media');
+      expect(markupFallback).toContain('Early Works');
+      expect(markupFallback).not.toContain('Should not appear');
+
+      const markupLegacyTheme = renderToStaticMarkup(
+        React.createElement(CuratorialPlaque, {
+          artwork: {
+            id: 'artwork-legacy-theme',
+            title: 'Legacy Theme Work',
+            theme: 'Kinetic Scribblism',
+          } as unknown as gallery.IArtwork,
+          variant: 'minimal',
+        })
+      );
+
+      expect(markupLegacyTheme).toContain('Kinetic Scribblism');
+    });
+
+    it('includes break-words wrapping classes on title, medium, and movement pill for narrow viewports in minimal mode', () => {
+      const tree = CuratorialPlaque({
+        artwork: mockArtwork,
+        variant: 'minimal',
+      });
+
+      const h3Elements = findElements(tree, (el) => el.type === 'h3');
+      expect(h3Elements).toHaveLength(1);
+      expect(h3Elements[0].props.className).toContain('break-words');
+
+      const pElements = findElements(tree, (el) => el.type === 'p');
+      expect(pElements).toHaveLength(1);
+      expect(pElements[0].props.className).toContain('break-words');
+
+      const pillElements = findElements(
+        tree,
+        (el) => el.type === 'span' && typeof el.props.className === 'string' && el.props.className.includes('rounded-full')
+      );
+      expect(pillElements).toHaveLength(1);
+      expect(pillElements[0].props.className).toContain('break-words');
     });
   });
 });
