@@ -80,6 +80,9 @@ describe('Editorial Gallery & Museum Shell Integration Suite (#255)', () => {
       expect(markup).toContain('id="statement"');
       expect(markup).toContain('Curatorial Statement');
 
+      // Featured artwork omitted when artworks is empty
+      expect(markup).not.toContain('id="featured-artwork"');
+
       // Biography section
       expect(markup).toContain('id="biography"');
       expect(markup).toContain('Historical Movements Taxonomy');
@@ -251,15 +254,22 @@ describe('Editorial Gallery & Museum Shell Integration Suite (#255)', () => {
       const markup = renderToStaticMarkup(React.createElement(Home));
 
       // EditorialStatement rendered
-      expect(markup).toContain('id="statement"');
+      const statementIdx = markup.indexOf('id="statement"');
+      const featuredIdx = markup.indexOf('id="featured-artwork"');
+      const biographyIdx = markup.indexOf('id="biography"');
+      const collectionIdx = markup.indexOf('id="collection"');
+
+      expect(statementIdx).toBeGreaterThan(-1);
+      expect(featuredIdx).toBeGreaterThan(statementIdx);
+      expect(biographyIdx).toBeGreaterThan(featuredIdx);
+      expect(collectionIdx).toBeGreaterThan(biographyIdx);
+
       expect(markup).toContain('Curatorial Statement');
 
       // EditorialBiography rendered
-      expect(markup).toContain('id="biography"');
       expect(markup).toContain('Historical Movements Taxonomy');
 
       // #collection rendered with CuratedGalleryCollection
-      expect(markup).toContain('id="collection"');
       expect(markup).toContain('data-testid="curated-gallery-collection"');
       expect(markup).toContain('aria-label="Exhibition period filtering"');
       expect(markup).toContain('role="tablist"');
@@ -280,10 +290,11 @@ describe('Editorial Gallery & Museum Shell Integration Suite (#255)', () => {
       });
 
       const markup = renderToStaticMarkup(React.createElement(Home));
+      const collectionMarkup = markup.slice(markup.indexOf('id="collection"'));
 
-      expect(markup).toContain('Study in Crayon No. 1');
-      expect(markup).toContain('Study in Crayon No. 2');
-      expect(markup).not.toContain('Domestic Construction No. 1');
+      expect(collectionMarkup).toContain('Study in Crayon No. 1');
+      expect(collectionMarkup).toContain('Study in Crayon No. 2');
+      expect(collectionMarkup).not.toContain('Domestic Construction No. 1');
     });
 
     it('should verify sort toggle reverses chronological order', () => {
@@ -298,8 +309,9 @@ describe('Editorial Gallery & Museum Shell Integration Suite (#255)', () => {
         resetFilter: vi.fn(),
       });
       const descMarkup = renderToStaticMarkup(React.createElement(Home));
-      const descIdx1 = descMarkup.indexOf('Study in Crayon No. 1');
-      const descIdx2 = descMarkup.indexOf('Domestic Construction No. 1');
+      const descCollectionMarkup = descMarkup.slice(descMarkup.indexOf('id="collection"'));
+      const descIdx1 = descCollectionMarkup.indexOf('Study in Crayon No. 1');
+      const descIdx2 = descCollectionMarkup.indexOf('Domestic Construction No. 1');
       expect(descIdx1).toBeLessThan(descIdx2);
 
       // Ascending (Earliest first: art-002 [1700000000], art-003 [1710000000], art-001 [1712707200])
@@ -311,8 +323,9 @@ describe('Editorial Gallery & Museum Shell Integration Suite (#255)', () => {
         resetFilter: vi.fn(),
       });
       const ascMarkup = renderToStaticMarkup(React.createElement(Home));
-      const ascIdx1 = ascMarkup.indexOf('Study in Crayon No. 1');
-      const ascIdx2 = ascMarkup.indexOf('Domestic Construction No. 1');
+      const ascCollectionMarkup = ascMarkup.slice(ascMarkup.indexOf('id="collection"'));
+      const ascIdx1 = ascCollectionMarkup.indexOf('Study in Crayon No. 1');
+      const ascIdx2 = ascCollectionMarkup.indexOf('Domestic Construction No. 1');
       expect(ascIdx2).toBeLessThan(ascIdx1);
     });
 
