@@ -1,6 +1,7 @@
 import React, { Suspense } from 'react';
 import { getArtworks } from '@/lib/nfs';
 import EditorialStatement from './components/EditorialStatement';
+import RepresentativeArtwork from './components/RepresentativeArtwork';
 import EditorialBiography from './components/EditorialBiography';
 import CuratedGalleryCollection from './components/CuratedGalleryCollection';
 
@@ -11,6 +12,9 @@ export default function Home() {
     <div className="flex flex-col w-full">
       {/* Curatorial Statement Section (#statement) */}
       <EditorialStatement />
+
+      {/* Featured Representative Artwork Section (#featured-artwork) */}
+      <RepresentativeArtwork artworks={artworks} />
 
       {/* Historical Movements Taxonomy Section (#biography) */}
       <EditorialBiography />
