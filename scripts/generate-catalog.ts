@@ -2,6 +2,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { gallery } from '../lib/proto/gallery';
 
+export const CANONICAL_MOVEMENTS = [
+  'The Crayon Period',
+  'Domestic Destructionism',
+  'Kinetic Scribblism',
+  'Found Object Assemblage',
+  'Monochrome Nihilism',
+] as const;
+
 export interface CatalogArtwork {
   id: string;
   title: string;
@@ -11,6 +19,7 @@ export interface CatalogArtwork {
   image_path: string;
   thumbnail_path: string;
   medium: string;
+  is_representative: boolean;
 }
 
 export function parseArgs(args: string[]): { storagePath?: string } {
@@ -53,6 +62,103 @@ function getTimestamp(timestamp: unknown): number {
   return Number(timestamp) || 0;
 }
 
+function scoreCatalogArtwork(a: CatalogArtwork, dominantMovement: string): number {
+  let score = 0;
+  const theme = a.theme_id.trim();
+  const title = a.title.trim();
+  const description = a.description.trim();
+  const medium = a.medium.trim();
+  const imagePath = a.image_path.trim();
+  const thumbnailPath = a.thumbnail_path.trim();
+
+  if (dominantMovement !== '' && theme === dominantMovement) {
+    score += 40;
+  }
+  if (theme !== '' && theme.toLowerCase() !== 'early works') {
+    score += 25;
+  }
+  if (title !== '' && title.toLowerCase() !== 'untitled') {
+    score += 20;
+  }
+  if (description !== '') {
+    score += 20;
+  }
+  if (medium !== '' && medium.toLowerCase() !== 'mixed media') {
+    score += 15;
+  }
+  if (
+    imagePath !== '' &&
+    imagePath !== '/placeholder.svg' &&
+    thumbnailPath !== '' &&
+    thumbnailPath !== '/placeholder.svg'
+  ) {
+    score += 10;
+  }
+
+  return score;
+}
+
+function isBetterRepresentativeCandidate(
+  candidate: CatalogArtwork,
+  candidateScore: number,
+  best: CatalogArtwork,
+  bestScore: number
+): boolean {
+  if (candidateScore !== bestScore) {
+    return candidateScore > bestScore;
+  }
+
+  const candValidTs = candidate.timestamp > 0;
+  const bestValidTs = best.timestamp > 0;
+  if (candValidTs !== bestValidTs) {
+    return candValidTs;
+  }
+  if (candValidTs && bestValidTs && candidate.timestamp !== best.timestamp) {
+    return candidate.timestamp > best.timestamp;
+  }
+
+  return candidate.id < best.id;
+}
+
+export function designateRepresentativeArtwork(artworks: CatalogArtwork[]): void {
+  if (artworks.length === 0) {
+    return;
+  }
+
+  const movementCounts = new Map<string, number>();
+  for (const a of artworks) {
+    const theme = a.theme_id.trim();
+    if (theme !== '') {
+      movementCounts.set(theme, (movementCounts.get(theme) ?? 0) + 1);
+    }
+  }
+
+  let dominantMovement = '';
+  let maxCount = 0;
+  for (const movement of CANONICAL_MOVEMENTS) {
+    const count = movementCounts.get(movement) ?? 0;
+    if (count > maxCount) {
+      maxCount = count;
+      dominantMovement = movement;
+    }
+  }
+
+  let bestIdx = 0;
+  let bestScore = scoreCatalogArtwork(artworks[0], dominantMovement);
+  artworks[0].is_representative = false;
+
+  for (let i = 1; i < artworks.length; i++) {
+    artworks[i].is_representative = false;
+    const score = scoreCatalogArtwork(artworks[i], dominantMovement);
+    if (isBetterRepresentativeCandidate(artworks[i], score, artworks[bestIdx], bestScore)) {
+      bestIdx = i;
+      bestScore = score;
+    }
+  }
+
+  artworks[bestIdx].is_representative = true;
+}
+
 export function generateCatalog(storagePath: string): string {
   if (!fs.existsSync(storagePath)) {
     fs.mkdirSync(storagePath, { recursive: true });
@@ -77,6 +183,7 @@ export function generateCatalog(storagePath: string): string {
         image_path: String(decoded.imagePath ?? (decoded as unknown as { image_path?: string }).image_path ?? ''),
         thumbnail_path: String(decoded.thumbnailPath ?? (decoded as unknown as { thumbnail_path?: string }).thumbnail_path ?? ''),
         medium: String(decoded.medium ?? ''),
+        is_representative: false,
       };
 
       artworks.push(normalized);
@@ -85,7 +192,14 @@ export function generateCatalog(storagePath: string): string {
     }
   }
 
-  artworks.sort((a, b) => b.timestamp - a.timestamp);
+  artworks.sort((a, b) => {
+    if (b.timestamp !== a.timestamp) {
+      return b.timestamp - a.timestamp;
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+
+  designateRepresentativeArtwork(artworks);
 
   const catalogPath = path.join(storagePath, 'catalog.json');
   const tempPath = path.join(
