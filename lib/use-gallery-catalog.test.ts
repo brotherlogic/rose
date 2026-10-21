@@ -246,6 +246,40 @@ describe('useGalleryCatalog Hook & Normalization Suite (#344)', () => {
       expect(normalizeCatalogArtwork({ id: '   ' })).toBeNull();
       expect(normalizeCatalogArtwork({ id: 123 })).toBeNull();
     });
+
+    it('preserves is_representative: true and isRepresentative: true as isRepresentative: true and omits the property when false or absent', () => {
+      const fromSnakeTrue = normalizeCatalogArtwork({
+        id: 'rep-snake',
+        is_representative: true,
+      });
+      expect(fromSnakeTrue).toMatchObject({
+        id: 'rep-snake',
+        isRepresentative: true,
+      });
+
+      const fromCamelTrue = normalizeCatalogArtwork({
+        id: 'rep-camel',
+        isRepresentative: true,
+      });
+      expect(fromCamelTrue).toMatchObject({
+        id: 'rep-camel',
+        isRepresentative: true,
+      });
+
+      const fromFalse = normalizeCatalogArtwork({
+        id: 'rep-false',
+        is_representative: false,
+        isRepresentative: false,
+      });
+      expect(fromFalse).not.toBeNull();
+      expect('isRepresentative' in (fromFalse as Record<string, unknown>)).toBe(false);
+
+      const fromAbsent = normalizeCatalogArtwork({
+        id: 'rep-absent',
+      });
+      expect(fromAbsent).not.toBeNull();
+      expect('isRepresentative' in (fromAbsent as Record<string, unknown>)).toBe(false);
+    });
   });
 
   describe('useGalleryCatalog Hydration Lifecycle', () => {
@@ -407,6 +441,56 @@ describe('useGalleryCatalog Hook & Normalization Suite (#344)', () => {
       expect(result.current.isHydrated).toBe(false);
 
       unmount();
+    });
+
+    it('deduplicates concurrent fetch(/data/catalog.json) calls when multiple hooks mount together', async () => {
+      const remotePayload = [
+        {
+          id: 'shared-001',
+          title: 'Shared Representative Work',
+          description: 'Fetched once across concurrent hooks.',
+          theme_id: 'The Crayon Period',
+          timestamp: 1730000000,
+          image_path: 'images/shared-001.jpg',
+          thumbnail_path: 'thumbnails/shared-001.webp',
+          medium: 'Wax on panel',
+          is_representative: true,
+        },
+      ];
+
+      let resolveFetch!: (value: unknown) => void;
+      const fetchMock = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveFetch = resolve;
+          })
+      );
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const hookA = renderHook(() => useGalleryCatalog(baselineArtworks));
+      const hookB = renderHook(() => useGalleryCatalog(baselineArtworks));
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveFetch({
+          ok: true,
+          status: 200,
+          json: async () => remotePayload,
+        });
+        await Promise.resolve();
+      });
+
+      expect(hookA.result.current.isHydrated).toBe(true);
+      expect(hookB.result.current.isHydrated).toBe(true);
+      expect(hookA.result.current.artworks).toEqual(hookB.result.current.artworks);
+      expect(hookA.result.current.artworks[0]).toMatchObject({
+        id: 'shared-001',
+        isRepresentative: true,
+      });
+
+      hookA.unmount();
+      hookB.unmount();
     });
   });
 });

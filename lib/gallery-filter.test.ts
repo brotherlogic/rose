@@ -3,6 +3,9 @@ import {
   normalizeTheme,
   aggregateMovements,
   filterAndSortArtworks,
+  scoreArtwork,
+  selectRepresentativeArtwork,
+  CatalogArtwork,
 } from './gallery-filter';
 import { gallery } from './proto/gallery';
 
@@ -177,6 +180,204 @@ describe('Gallery Filter & Thematic Aggregation Engine (lib/gallery-filter.ts)',
       const original = [...mockArtworks];
       filterAndSortArtworks(mockArtworks, 'The Crayon Period', 'desc');
       expect(mockArtworks).toEqual(original);
+    });
+  });
+
+  describe('scoreArtwork', () => {
+    it('computes the full 130-point score for a fully curated artwork in the dominant canonical movement', () => {
+      const artwork: gallery.IArtwork = {
+        id: 'art-full',
+        title: 'Crimson Horizon',
+        description: 'An exploration of wax density.',
+        themeId: 'The Crayon Period',
+        medium: 'Wax crayon on paper',
+        imagePath: '/data/images/art-full.jpg',
+        thumbnailPath: '/data/thumbnails/art-full.webp',
+        timestamp: 1700000000,
+      };
+
+      expect(scoreArtwork(artwork, 'The Crayon Period')).toBe(130);
+    });
+
+    it('computes individual point weights and returns 0 for unannotated/default placeholder fields', () => {
+      const placeholder: gallery.IArtwork = {
+        id: 'art-placeholder',
+        title: '  untitled  ',
+        description: '   ',
+        themeId: '  Early Works ',
+        medium: ' Mixed Media ',
+        imagePath: '/placeholder.svg',
+        thumbnailPath: '/placeholder.svg',
+      };
+
+      expect(scoreArtwork(placeholder, 'The Crayon Period')).toBe(0);
+
+      // Non-dominant non-fallback theme (+25), valid title (+20), missing description (0), valid medium (+15), missing thumbnail (0)
+      const partial: gallery.IArtwork = {
+        id: 'art-partial',
+        title: 'Study #4',
+        description: '',
+        themeId: 'Kinetic Scribblism',
+        medium: 'Graphite on wall',
+        imagePath: '/data/images/art-partial.jpg',
+        thumbnailPath: '/placeholder.svg',
+      };
+
+      expect(scoreArtwork(partial, 'The Crayon Period')).toBe(25 + 20 + 15);
+    });
+  });
+
+  describe('selectRepresentativeArtwork', () => {
+    it('returns null when artworks is empty', () => {
+      expect(selectRepresentativeArtwork([])).toBeNull();
+      expect(selectRepresentativeArtwork(null as unknown as gallery.IArtwork[])).toBeNull();
+    });
+
+    it('returns the single flagged artwork when isRepresentative or is_representative is true', () => {
+      const artworks: CatalogArtwork[] = [
+        {
+          id: 'high-score',
+          title: 'Masterpiece',
+          description: 'Full curatorial note.',
+          themeId: 'The Crayon Period',
+          medium: 'Crayon on canvas',
+          imagePath: '/data/images/high-score.jpg',
+          thumbnailPath: '/data/thumbnails/high-score.webp',
+          timestamp: 500,
+        },
+        {
+          id: 'flagged-camel',
+          title: 'Untitled',
+          isRepresentative: true,
+          timestamp: 100,
+        },
+      ];
+
+      expect(selectRepresentativeArtwork(artworks)?.id).toBe('flagged-camel');
+
+      const snakeFlagged: CatalogArtwork[] = [
+        artworks[0],
+        {
+          id: 'flagged-snake',
+          title: 'Untitled',
+          is_representative: true,
+          timestamp: 100,
+        },
+      ];
+
+      expect(selectRepresentativeArtwork(snakeFlagged)?.id).toBe('flagged-snake');
+    });
+
+    it('breaks ties deterministically when multiple entries are flagged', () => {
+      const artworks: CatalogArtwork[] = [
+        {
+          id: 'flagged-b',
+          title: 'Curated B',
+          description: 'Note B',
+          themeId: 'The Crayon Period',
+          medium: 'Oil pastel',
+          imagePath: '/data/images/b.jpg',
+          thumbnailPath: '/data/thumbnails/b.webp',
+          timestamp: 300,
+          isRepresentative: true,
+        },
+        {
+          id: 'flagged-a',
+          title: 'Curated A',
+          description: 'Note A',
+          themeId: 'The Crayon Period',
+          medium: 'Oil pastel',
+          imagePath: '/data/images/a.jpg',
+          thumbnailPath: '/data/thumbnails/a.webp',
+          timestamp: 300,
+          is_representative: true,
+        },
+        {
+          id: 'flagged-lower-score',
+          title: 'Untitled',
+          timestamp: 999,
+          isRepresentative: true,
+        },
+      ];
+
+      // flagged-a and flagged-b tie on score (130) and timestamp (300); 'flagged-a' wins by id ASC
+      expect(selectRepresentativeArtwork(artworks)?.id).toBe('flagged-a');
+    });
+
+    it('computes the fallback score and breaks ties deterministically when no entries are flagged', () => {
+      const artworks: gallery.IArtwork[] = [
+        // 2 works in Kinetic Scribblism (makes Kinetic Scribblism the dominant canonical movement)
+        {
+          id: 'ks-1',
+          title: 'Kinetic I',
+          description: 'Movement piece 1',
+          themeId: 'Kinetic Scribblism',
+          medium: 'Ink on board',
+          imagePath: '/data/images/ks-1.jpg',
+          thumbnailPath: '/data/thumbnails/ks-1.webp',
+          timestamp: 200,
+        },
+        {
+          id: 'ks-2',
+          title: 'Kinetic II',
+          description: 'Movement piece 2',
+          themeId: 'Kinetic Scribblism',
+          medium: 'Ink on board',
+          imagePath: '/data/images/ks-2.jpg',
+          thumbnailPath: '/data/thumbnails/ks-2.webp',
+          timestamp: 400,
+        },
+        // 1 work in The Crayon Period (equally curated, but not in dominant movement -> 90 pts vs 130 pts)
+        {
+          id: 'cp-1',
+          title: 'Crayon I',
+          description: 'Crayon piece 1',
+          themeId: 'The Crayon Period',
+          medium: 'Wax on paper',
+          imagePath: '/data/images/cp-1.jpg',
+          thumbnailPath: '/data/thumbnails/cp-1.webp',
+          timestamp: 900,
+        },
+      ];
+
+      // ks-1 and ks-2 both score 130; ks-2 has newer timestamp (400 > 200)
+      expect(selectRepresentativeArtwork(artworks)?.id).toBe('ks-2');
+    });
+
+    it('breaks dominant canonical movement count ties by earliest index in CANONICAL_MOVEMENTS and handles unannotated archives', () => {
+      const tieMovements: gallery.IArtwork[] = [
+        {
+          id: 'mono-1',
+          title: 'Void',
+          description: 'Darkness.',
+          themeId: 'Monochrome Nihilism',
+          medium: 'Charcoal',
+          imagePath: '/data/images/mono-1.jpg',
+          thumbnailPath: '/data/thumbnails/mono-1.webp',
+          timestamp: 500,
+        },
+        {
+          id: 'crayon-1',
+          title: 'Dawn',
+          description: 'Wax.',
+          themeId: 'The Crayon Period',
+          medium: 'Crayon',
+          imagePath: '/data/images/crayon-1.jpg',
+          thumbnailPath: '/data/thumbnails/crayon-1.webp',
+          timestamp: 100,
+        },
+      ];
+
+      // Both canonical movements have count 1; 'The Crayon Period' is index 0 in CANONICAL_MOVEMENTS so crayon-1 gets +40
+      expect(selectRepresentativeArtwork(tieMovements)?.id).toBe('crayon-1');
+
+      const unannotated: gallery.IArtwork[] = [
+        { id: 'un-z', timestamp: 0 },
+        { id: 'un-b', timestamp: 250 },
+        { id: 'un-a', timestamp: 250 },
+      ];
+
+      expect(selectRepresentativeArtwork(unannotated)?.id).toBe('un-a');
     });
   });
 });
