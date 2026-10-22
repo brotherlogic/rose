@@ -95,11 +95,11 @@ describe('Artwork Lightbox Modal Component Suite (#297)', () => {
       expect(markup).toContain('backdrop-blur-sm');
     });
 
-    it('should render responsive image container preserving aspect ratio with object-contain max-h-[85vh] max-w-[90vw]', () => {
+    it('should render responsive image container preserving aspect ratio with object-contain max-h-[65vh] max-w-[90vw]', () => {
       const markup = renderToStaticMarkup(React.createElement(ArtworkLightboxModal, defaultProps));
 
       expect(markup).toMatch(/object-contain/);
-      expect(markup).toMatch(/max-h-\[85vh\]/);
+      expect(markup).toMatch(/max-h-\[65vh\]/);
       expect(markup).toMatch(/max-w-\[90vw\]/);
     });
 
@@ -157,6 +157,24 @@ describe('Artwork Lightbox Modal Component Suite (#297)', () => {
       expect(markup).toContain('id="curatorial-plaque-title"');
       expect(markup).toContain('Disintegration of Form in Yellow');
       expect(markup).toContain('Wax crayon on reclaimed cardboard');
+    });
+
+    it('should position CuratorialPlaque below the artwork image in vertical flex flow without absolute overlap', () => {
+      const tree = renderAndCapture(defaultProps);
+      const content = findElements(tree, (el) => el.props['data-testid'] === 'lightbox-content')[0];
+      expect(content).toBeDefined();
+      expect(content.props.className).toContain('flex-col');
+      expect(content.props.className).toContain('gap-4');
+
+      const children = React.Children.toArray(content.props.children) as React.ReactElement[];
+      expect(children.length).toBe(2);
+
+      const imageWrapper = children[0];
+      const plaqueWrapper = children[1];
+
+      expect(findElements(imageWrapper, (el) => el.type === 'img').length).toBe(1);
+      expect(plaqueWrapper.props.className).not.toContain('absolute');
+      expect(plaqueWrapper.props.className).not.toContain('bottom-4');
     });
   });
 

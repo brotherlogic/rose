@@ -226,10 +226,10 @@ export default function ArtworkLightboxModal({
       <div
         data-testid="lightbox-content"
         onClick={(e) => e.stopPropagation()}
-        className="relative flex flex-col items-center justify-center max-h-[85vh] max-w-[90vw]"
+        className="relative flex flex-col items-center justify-center gap-4 max-h-[90vh] max-w-[90vw] overflow-y-auto"
       >
         {/* High-Resolution Artwork Presentation */}
-        <div className="relative flex items-center justify-center overflow-hidden rounded-md shadow-2xl">
+        <div className="relative flex items-center justify-center shrink-0 overflow-hidden rounded-md shadow-2xl">
           {/* Skeleton Shimmer Loading State */}
           {!imageLoaded && (
             <div
@@ -244,12 +244,12 @@ export default function ArtworkLightboxModal({
             alt={title}
             onLoad={() => setImageLoaded(true)}
             onError={handleImageError}
-            className="object-contain max-h-[85vh] max-w-[90vw] select-none transition-opacity duration-300"
+            className="object-contain max-h-[65vh] max-w-[90vw] select-none transition-opacity duration-300"
           />
         </div>
 
         {/* Embedded Museum Curatorial Plaque */}
-        <div className="absolute bottom-4 left-4 right-4 md:left-auto md:right-4 z-30 pointer-events-auto">
+        <div className="w-full flex justify-center shrink-0 z-30 pointer-events-auto">
           <CuratorialPlaque
             artwork={artwork}
             isCollapsed={isPlaqueCollapsed}
