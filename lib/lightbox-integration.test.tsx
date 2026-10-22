@@ -289,9 +289,18 @@ describe('End-to-End Lightbox Verification Suite (#299)', () => {
       expect(markup).toContain('role="dialog"');
       expect(markup).toContain('aria-modal="true"');
       expect(markup).toContain('aria-labelledby="curatorial-plaque-title"');
-      expect(markup).toContain('object-contain max-h-[85vh] max-w-[90vw]');
+      expect(markup).toContain('object-contain max-h-[65vh] max-w-[90vw]');
       expect(markup).toContain('src="/data/images/art-001.jpg"');
       expect(markup).toContain('1 / 3');
+      expect(markup).not.toContain('absolute bottom-4');
+
+      // Verify CuratorialPlaque sits below the image in vertical flex layout
+      const modalTree = renderAndCaptureModal(modalProps);
+      const contentEl = findElements(modalTree, (el) => el.props['data-testid'] === 'lightbox-content')[0];
+      expect(contentEl.props.className).toContain('flex-col');
+      expect(contentEl.props.className).toContain('gap-4');
+      const contentChildren = React.Children.toArray(contentEl.props.children) as React.ReactElement[];
+      expect(contentChildren[1].props.className).not.toContain('absolute');
 
       // Embedded Curatorial Plaque contents
       expect(markup).toContain('Disintegration of Form in Yellow');
