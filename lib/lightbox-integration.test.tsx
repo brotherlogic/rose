@@ -149,11 +149,13 @@ describe('End-to-End Lightbox Verification Suite (#299)', () => {
     },
   ];
 
+  let listeners: Record<string, ((event: Event) => void)[]>;
   let mockWin: {
     location: { pathname: string; search: string };
     history: { pushState: ReturnType<typeof vi.fn>; replaceState: ReturnType<typeof vi.fn> };
     addEventListener: ReturnType<typeof vi.fn>;
     removeEventListener: ReturnType<typeof vi.fn>;
+    dispatchEvent: ReturnType<typeof vi.fn>;
     HTMLIFrameElement: () => void;
   };
 
@@ -161,6 +163,7 @@ describe('End-to-End Lightbox Verification Suite (#299)', () => {
   const modalSource = fs.readFileSync(modalSourcePath, 'utf8');
 
   beforeEach(() => {
+    listeners = {};
     mockWin = {
       location: {
         pathname: '/',
@@ -182,8 +185,22 @@ describe('End-to-End Lightbox Verification Suite (#299)', () => {
           }
         }),
       },
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
+      addEventListener: vi.fn((event: string, fn: (event: Event) => void) => {
+        listeners[event] = listeners[event] || [];
+        listeners[event].push(fn);
+      }),
+      removeEventListener: vi.fn((event: string, fn: (event: Event) => void) => {
+        if (listeners[event]) {
+          listeners[event] = listeners[event].filter((f) => f !== fn);
+        }
+      }),
+      dispatchEvent: vi.fn((event: Event) => {
+        if (listeners[event.type]) {
+          listeners[event.type].forEach((fn) => fn(event));
+          return true;
+        }
+        return false;
+      }),
       HTMLIFrameElement: function () {},
     };
 
@@ -434,7 +451,14 @@ describe('End-to-End Lightbox Verification Suite (#299)', () => {
       renderAndCaptureCollection({ artworks: sampleArtworks });
 
       // Only art-002 belongs to Domestic Destructionism
-      expect(lightboxSpy).toHaveBeenCalledWith([sampleArtworks[1]]);
+      expect(lightboxSpy).toHaveBeenCalledWith(
+        [sampleArtworks[1]],
+        expect.objectContaining({
+          catalogArtworks: sampleArtworks,
+          isCatalogReady: true,
+          onClearMovementFilter: expect.any(Function),
+        })
+      );
     });
   });
 
@@ -604,6 +628,113 @@ describe('End-to-End Lightbox Verification Suite (#299)', () => {
         result.current.closeLightbox();
       });
       expect(mockWin.history.pushState).toHaveBeenCalledWith(
+        null,
+        '',
+        '/?movement=The+Crayon+Period'
+      );
+      expect(mockWin.location.search).toBe('?movement=The+Crayon+Period');
+
+      unmount();
+    });
+
+    it('should open an artwork from the grid (pushState), step through multiple artworks (replaceState), and return to the grid in a single Browser Back (popstate) step', () => {
+      mockWin.location.search = '';
+      const { result: tree, unmount } = renderHook(() =>
+        CuratedGalleryCollection({ artworks: sampleArtworks })
+      );
+
+      // Initially grid is rendered and modal is closed
+      const initialGridEl = findElements(tree.current, (el) => el.type === VirtualizedGalleryGrid)[0];
+      expect(initialGridEl).toBeDefined();
+      expect(findElements(tree.current, (el) => el.type === ArtworkLightboxModal)).toHaveLength(0);
+
+      // 1. Open first artwork in sorted grid (art-003, timestamp 1715000000)
+      const mockTrigger = { tagName: 'BUTTON', focus: vi.fn() } as unknown as HTMLElement;
+      act(() => {
+        initialGridEl.props.onSelectArtwork(initialGridEl.props.artworks[0], 0, mockTrigger);
+      });
+
+      expect(mockWin.history.pushState).toHaveBeenCalledTimes(1);
+      expect(mockWin.history.pushState).toHaveBeenCalledWith(null, '', '/?artwork=art-003');
+      expect(mockWin.location.search).toBe('?artwork=art-003');
+
+      let modalEl = findElements(tree.current, (el) => el.type === ArtworkLightboxModal)[0];
+      expect(modalEl).toBeDefined();
+      expect(modalEl.props.artwork.id).toBe('art-003');
+
+      // 2. Step through multiple artworks using onNext (replaceState)
+      act(() => {
+        modalEl.props.onNext();
+      });
+      expect(mockWin.history.pushState).toHaveBeenCalledTimes(1);
+      expect(mockWin.history.replaceState).toHaveBeenCalledWith(null, '', '/?artwork=art-001');
+
+      modalEl = findElements(tree.current, (el) => el.type === ArtworkLightboxModal)[0];
+      expect(modalEl.props.artwork.id).toBe('art-001');
+
+      act(() => {
+        modalEl.props.onNext();
+      });
+      expect(mockWin.history.pushState).toHaveBeenCalledTimes(1);
+      expect(mockWin.history.replaceState).toHaveBeenCalledWith(null, '', '/?artwork=art-002');
+
+      modalEl = findElements(tree.current, (el) => el.type === ArtworkLightboxModal)[0];
+      expect(modalEl.props.artwork.id).toBe('art-002');
+
+      // 3. Press Browser Back once -> URL reverts to pre-lightbox '/' and popstate fires
+      mockWin.location.search = '';
+      act(() => {
+        mockWin.dispatchEvent(new Event('popstate'));
+      });
+
+      expect(findElements(tree.current, (el) => el.type === ArtworkLightboxModal)).toHaveLength(0);
+      expect((mockTrigger as unknown as { focus: ReturnType<typeof vi.fn> }).focus).toHaveBeenCalledTimes(1);
+
+      unmount();
+    });
+
+    it('should automatically clear a mismatched ?movement= filter and open the artwork with CuratorialPlaque expanded when deep-linking', () => {
+      // art-002 belongs to 'Domestic Destructionism', excluded by '?movement=The+Crayon+Period'
+      mockWin.location.search = '?movement=The+Crayon+Period&artwork=art-002';
+
+      const { result: tree, unmount } = renderHook(() =>
+        CuratedGalleryCollection({ artworks: sampleArtworks })
+      );
+
+      // Movement filter should be stripped via replaceState (without duplicate pushState) and artwork=art-002 preserved
+      expect(mockWin.location.search).toBe('?artwork=art-002');
+      expect(mockWin.history.pushState).not.toHaveBeenCalled();
+      expect(mockWin.history.replaceState).toHaveBeenCalledWith(null, '', '/?artwork=art-002');
+
+      // Lightbox should be open for art-002 with CuratorialPlaque expanded
+      const modalEl = findElements(tree.current, (el) => el.type === ArtworkLightboxModal)[0];
+      expect(modalEl).toBeDefined();
+      expect(modalEl.props.artwork.id).toBe('art-002');
+      expect(modalEl.props.isPlaqueCollapsed).toBe(false);
+      expect(modalEl.props.totalCount).toBe(3);
+
+      const modalMarkup = renderToStaticMarkup(modalEl);
+      expect(modalMarkup).toContain('Torn Cardboard Sculpture');
+      expect(modalMarkup).toContain('The architectural fragility of domestic structures.');
+      expect(modalMarkup).toContain('aria-expanded="true"');
+
+      unmount();
+    });
+
+    it('should fall back cleanly to the gallery grid and strip artwork from the URL when deep-linking to an unknown artwork ID', () => {
+      mockWin.location.search = '?movement=The+Crayon+Period&artwork=unknown-999';
+
+      const { result: tree, unmount } = renderHook(() =>
+        CuratedGalleryCollection({ artworks: sampleArtworks })
+      );
+
+      // Lightbox remains closed and grid is rendered
+      expect(findElements(tree.current, (el) => el.type === ArtworkLightboxModal)).toHaveLength(0);
+      const gridEl = findElements(tree.current, (el) => el.type === VirtualizedGalleryGrid)[0];
+      expect(gridEl).toBeDefined();
+
+      // Invalid artwork parameter stripped via replaceState while preserving movement filter
+      expect(mockWin.history.replaceState).toHaveBeenCalledWith(
         null,
         '',
         '/?movement=The+Crayon+Period'

@@ -10,6 +10,7 @@ export interface UseGalleryFilterReturn {
   setMovement: (movement: string | null) => void;
   setSortDirection: (sort: SortDirection) => void;
   resetFilter: () => void;
+  clearMovementFilter?: () => void;
 }
 
 /**
@@ -136,11 +137,33 @@ export function useGalleryFilter(): UseGalleryFilterReturn {
     }
   }, []);
 
+  const clearMovementFilter = useCallback(() => {
+    setSelectedMovement(null);
+
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has('movement') || params.get('sort') === 'desc') {
+        params.delete('movement');
+        if (params.get('sort') === 'desc') {
+          params.delete('sort');
+        }
+
+        const queryString = params.toString();
+        const cleanUrl = queryString
+          ? `${window.location.pathname}?${queryString}`
+          : window.location.pathname;
+
+        window.history.replaceState(null, '', cleanUrl);
+      }
+    }
+  }, []);
+
   return {
     selectedMovement,
     sortDirection,
     setMovement,
     setSortDirection,
     resetFilter,
+    clearMovementFilter,
   };
 }

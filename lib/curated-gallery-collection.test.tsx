@@ -335,7 +335,73 @@ describe('CuratedGalleryCollection Container Component Suite (#278)', () => {
       renderAndCapture({ artworks: sampleArtworks });
 
       // Only art-001 and art-003 belong to The Crayon Period
-      expect(lightboxSpy).toHaveBeenCalledWith([sampleArtworks[0], sampleArtworks[2]]);
+      expect(lightboxSpy).toHaveBeenCalledWith(
+        [sampleArtworks[0], sampleArtworks[2]],
+        expect.objectContaining({
+          catalogArtworks: sampleArtworks,
+          isCatalogReady: true,
+          onClearMovementFilter: expect.any(Function),
+        })
+      );
+    });
+
+    it('should forward catalogArtworks, isCatalogReady, and onClearMovementFilter across initial and hydrated states', () => {
+      const clearMovementFilterMock = vi.fn();
+      const setMovementMock = vi.fn();
+
+      vi.spyOn(useGalleryCatalogModule, 'useGalleryCatalog').mockReturnValue({
+        artworks: [],
+        isHydrated: false,
+        isCatalogReady: false,
+      });
+
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: 'The Crayon Period',
+        sortDirection: 'desc',
+        setMovement: setMovementMock,
+        setSortDirection: vi.fn(),
+        resetFilter: vi.fn(),
+        clearMovementFilter: clearMovementFilterMock,
+      });
+
+      const lightboxSpy = vi.spyOn(useArtworkLightboxModule, 'useArtworkLightbox');
+
+      renderAndCapture({ artworks: [] });
+
+      expect(lightboxSpy).toHaveBeenCalledWith(
+        [],
+        expect.objectContaining({
+          catalogArtworks: [],
+          isCatalogReady: false,
+          onClearMovementFilter: expect.any(Function),
+        })
+      );
+
+      const passedOptions = lightboxSpy.mock.calls[0][1];
+      passedOptions?.onClearMovementFilter?.();
+      expect(clearMovementFilterMock).toHaveBeenCalledTimes(1);
+      expect(setMovementMock).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to setMovement(null) in onClearMovementFilter when clearMovementFilter is not provided', () => {
+      const setMovementMock = vi.fn();
+
+      vi.spyOn(useGalleryFilterModule, 'useGalleryFilter').mockReturnValue({
+        selectedMovement: 'The Crayon Period',
+        sortDirection: 'desc',
+        setMovement: setMovementMock,
+        setSortDirection: vi.fn(),
+        resetFilter: vi.fn(),
+      });
+
+      const lightboxSpy = vi.spyOn(useArtworkLightboxModule, 'useArtworkLightbox');
+
+      renderAndCapture({ artworks: sampleArtworks });
+
+      const passedOptions = lightboxSpy.mock.calls[0][1];
+      expect(passedOptions).toBeDefined();
+      passedOptions?.onClearMovementFilter?.();
+      expect(setMovementMock).toHaveBeenCalledWith(null);
     });
   });
 
@@ -397,7 +463,14 @@ describe('CuratedGalleryCollection Container Component Suite (#278)', () => {
       expect(gridEl.props.artworks).toHaveLength(4);
       expect(gridEl.props.artworks[0].id).toBe('art-004');
 
-      expect(lightboxSpy).toHaveBeenCalledWith(gridEl.props.artworks);
+      expect(lightboxSpy).toHaveBeenCalledWith(
+        gridEl.props.artworks,
+        expect.objectContaining({
+          catalogArtworks: hydratedArtworks,
+          isCatalogReady: true,
+          onClearMovementFilter: expect.any(Function),
+        })
+      );
 
       const modalEl = findElements(tree, (el) => el.type === ArtworkLightboxModal)[0];
       expect(modalEl).toBeDefined();
