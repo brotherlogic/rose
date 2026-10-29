@@ -1,4 +1,14 @@
+'use client';
+/* eslint-disable react-hooks/rules-of-hooks */
+
 import React from 'react';
+import type { gallery } from '../../lib/proto/gallery';
+import { selectTopCanonicalMovements } from '../../lib/gallery-filter';
+import { useGalleryCatalog } from '../hooks/useGalleryCatalog';
+
+export interface EditorialBiographyProps {
+  artworks?: gallery.IArtwork[];
+}
 
 interface Movement {
   period: string;
@@ -51,7 +61,23 @@ const MOVEMENTS: Movement[] = [
   },
 ];
 
-export default function EditorialBiography() {
+export default function EditorialBiography({
+  artworks = [],
+}: EditorialBiographyProps = {}) {
+  let catalogResult = { artworks, isHydrated: false };
+  try {
+    catalogResult = useGalleryCatalog(artworks);
+  } catch {
+    catalogResult = { artworks, isHydrated: false };
+  }
+
+  const selectedTitles = new Set(
+    selectTopCanonicalMovements(catalogResult.artworks, 3)
+  );
+  const highlightedMovements = MOVEMENTS.filter((movement) =>
+    selectedTitles.has(movement.title)
+  );
+
   return (
     <section
       id="biography"
@@ -75,7 +101,7 @@ export default function EditorialBiography() {
         </header>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8">
-          {MOVEMENTS.map((movement) => (
+          {highlightedMovements.map((movement) => (
             <article
               key={movement.title}
               className="group p-6 md:p-8 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--border-focus)] transition-colors flex flex-col justify-between"

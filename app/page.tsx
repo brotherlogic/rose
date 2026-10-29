@@ -17,7 +17,7 @@ export default function Home() {
       <RepresentativeArtwork artworks={artworks} />
 
       {/* Historical Movements Taxonomy Section (#biography) */}
-      <EditorialBiography />
+      <EditorialBiography artworks={artworks} />
 
       {/* Permanent Collection Gallery Section (#collection) */}
       <section
