@@ -8,6 +8,7 @@ export const CATALOG_ENDPOINT = '/data/catalog.json';
 export interface UseGalleryCatalogResult {
   artworks: gallery.IArtwork[];
   isHydrated: boolean;
+  isCatalogReady?: boolean;
 }
 
 interface HasToNumber {
@@ -153,6 +154,9 @@ export function useGalleryCatalog(
 ): UseGalleryCatalogResult {
   const [artworks, setArtworks] = useState<gallery.IArtwork[]>(initialArtworks);
   const [isHydrated, setIsHydrated] = useState<boolean>(false);
+  const [isCatalogReady, setIsCatalogReady] = useState<boolean>(
+    initialArtworks.length > 0 || typeof fetch !== 'function'
+  );
 
   useEffect(() => {
     if (typeof fetch !== 'function') {
@@ -205,9 +209,12 @@ export function useGalleryCatalog(
     const currentPromise = inFlightCatalogPromise;
 
     void currentPromise.then((validArtworks) => {
-      if (!isCancelled && validArtworks && validArtworks.length > 0) {
-        setArtworks(validArtworks);
-        setIsHydrated(true);
+      if (!isCancelled) {
+        if (validArtworks && validArtworks.length > 0) {
+          setArtworks(validArtworks);
+          setIsHydrated(true);
+        }
+        setIsCatalogReady(true);
       }
     });
 
@@ -225,5 +232,6 @@ export function useGalleryCatalog(
   return {
     artworks: isHydrated ? artworks : initialArtworks,
     isHydrated,
+    isCatalogReady: isCatalogReady || isHydrated || initialArtworks.length > 0,
   };
 }

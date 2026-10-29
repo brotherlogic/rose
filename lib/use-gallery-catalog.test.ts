@@ -492,5 +492,168 @@ describe('useGalleryCatalog Hook & Normalization Suite (#344)', () => {
       hookA.unmount();
       hookB.unmount();
     });
+
+    it('sets isCatalogReady to true immediately on mount when initialArtworks is non-empty', () => {
+      // Keep fetch pending in flight
+      globalThis.fetch = vi.fn().mockReturnValue(new Promise(() => {})) as unknown as typeof fetch;
+
+      const { result, unmount } = renderHook(() => useGalleryCatalog(baselineArtworks));
+
+      expect(result.current.isCatalogReady).toBe(true);
+      expect(result.current.isHydrated).toBe(false);
+      expect(result.current.artworks).toEqual(baselineArtworks);
+
+      unmount();
+    });
+
+    it('starts isCatalogReady as false when initialArtworks is empty while fetch is in flight, and transitions to true once fetch resolves with artworks', async () => {
+      const remotePayload = [
+        {
+          id: 'dynamic-ready-001',
+          title: 'Settled Catalog Work',
+          description: 'Loaded asynchronously.',
+          theme_id: 'The Crayon Period',
+          timestamp: 1720000000,
+          image_path: 'images/dynamic-ready-001.jpg',
+          thumbnail_path: 'thumbnails/dynamic-ready-001.webp',
+          medium: 'Wax on paper',
+        },
+      ];
+
+      let resolveFetch!: (value: unknown) => void;
+      const fetchMock = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveFetch = resolve;
+          })
+      );
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const { result, unmount } = renderHook(() => useGalleryCatalog([]));
+
+      expect(result.current.isCatalogReady).toBe(false);
+      expect(result.current.isHydrated).toBe(false);
+      expect(result.current.artworks).toEqual([]);
+
+      await act(async () => {
+        resolveFetch({
+          ok: true,
+          status: 200,
+          json: async () => remotePayload,
+        });
+        await Promise.resolve();
+      });
+
+      expect(result.current.isCatalogReady).toBe(true);
+      expect(result.current.isHydrated).toBe(true);
+      expect(result.current.artworks).toHaveLength(1);
+      expect(result.current.artworks[0].id).toBe('dynamic-ready-001');
+
+      unmount();
+    });
+
+    it('transitions isCatalogReady from false to true when initialArtworks is empty and fetch resolves with 404, network error, malformed JSON, or empty array []', async () => {
+      // 1. Non-OK response (404)
+      let resolve404!: (value: unknown) => void;
+      globalThis.fetch = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolve404 = resolve;
+          })
+      ) as unknown as typeof fetch;
+
+      const hook404 = renderHook(() => useGalleryCatalog([]));
+      expect(hook404.result.current.isCatalogReady).toBe(false);
+
+      await act(async () => {
+        resolve404({
+          ok: false,
+          status: 404,
+          json: async () => ({ error: 'Not Found' }),
+        });
+        await Promise.resolve();
+      });
+
+      expect(hook404.result.current.isCatalogReady).toBe(true);
+      expect(hook404.result.current.isHydrated).toBe(false);
+      expect(hook404.result.current.artworks).toEqual([]);
+      hook404.unmount();
+
+      // 2. Network error
+      let rejectNet!: (reason?: unknown) => void;
+      globalThis.fetch = vi.fn().mockImplementation(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectNet = reject;
+          })
+      ) as unknown as typeof fetch;
+
+      const hookNet = renderHook(() => useGalleryCatalog([]));
+      expect(hookNet.result.current.isCatalogReady).toBe(false);
+
+      await act(async () => {
+        rejectNet(new Error('Network offline'));
+        await Promise.resolve();
+      });
+
+      expect(hookNet.result.current.isCatalogReady).toBe(true);
+      expect(hookNet.result.current.isHydrated).toBe(false);
+      expect(hookNet.result.current.artworks).toEqual([]);
+      hookNet.unmount();
+
+      // 3. Malformed JSON
+      let resolveBadJson!: (value: unknown) => void;
+      globalThis.fetch = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveBadJson = resolve;
+          })
+      ) as unknown as typeof fetch;
+
+      const hookBadJson = renderHook(() => useGalleryCatalog([]));
+      expect(hookBadJson.result.current.isCatalogReady).toBe(false);
+
+      await act(async () => {
+        resolveBadJson({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError('Unexpected token < in JSON');
+          },
+        });
+        await Promise.resolve();
+      });
+
+      expect(hookBadJson.result.current.isCatalogReady).toBe(true);
+      expect(hookBadJson.result.current.isHydrated).toBe(false);
+      expect(hookBadJson.result.current.artworks).toEqual([]);
+      hookBadJson.unmount();
+
+      // 4. Empty array []
+      let resolveEmpty!: (value: unknown) => void;
+      globalThis.fetch = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveEmpty = resolve;
+          })
+      ) as unknown as typeof fetch;
+
+      const hookEmpty = renderHook(() => useGalleryCatalog([]));
+      expect(hookEmpty.result.current.isCatalogReady).toBe(false);
+
+      await act(async () => {
+        resolveEmpty({
+          ok: true,
+          status: 200,
+          json: async () => [],
+        });
+        await Promise.resolve();
+      });
+
+      expect(hookEmpty.result.current.isCatalogReady).toBe(true);
+      expect(hookEmpty.result.current.isHydrated).toBe(false);
+      expect(hookEmpty.result.current.artworks).toEqual([]);
+      hookEmpty.unmount();
+    });
   });
 });
