@@ -5,6 +5,7 @@ import {
   filterAndSortArtworks,
   scoreArtwork,
   selectRepresentativeArtwork,
+  selectTopCanonicalMovements,
   CatalogArtwork,
 } from './gallery-filter';
 import { gallery } from './proto/gallery';
@@ -378,6 +379,112 @@ describe('Gallery Filter & Thematic Aggregation Engine (lib/gallery-filter.ts)',
       ];
 
       expect(selectRepresentativeArtwork(unannotated)?.id).toBe('un-a');
+    });
+  });
+
+  describe('selectTopCanonicalMovements', () => {
+    it('returns the first 3 canonical phases in chronological order for empty, null, or undefined artworks', () => {
+      const expected = [
+        'The Crayon Period',
+        'Domestic Destructionism',
+        'Kinetic Scribblism',
+      ];
+      expect(selectTopCanonicalMovements([])).toEqual(expected);
+      expect(selectTopCanonicalMovements(null)).toEqual(expected);
+      expect(selectTopCanonicalMovements(undefined)).toEqual(expected);
+    });
+
+    it('selects the top 3 canonical movements by descending count and returns them in canonical chronological order', () => {
+      // Phase V = 4, Phase III = 3, Phase II = 2, Phase I = 1, Phase IV = 0
+      const artworks: gallery.IArtwork[] = [
+        { id: 'v1', themeId: 'Monochrome Nihilism' },
+        { id: 'v2', themeId: 'Monochrome Nihilism' },
+        { id: 'v3', themeId: 'Monochrome Nihilism' },
+        { id: 'v4', themeId: 'Monochrome Nihilism' },
+        { id: 'iii1', themeId: 'Kinetic Scribblism' },
+        { id: 'iii2', themeId: 'Kinetic Scribblism' },
+        { id: 'iii3', themeId: 'Kinetic Scribblism' },
+        { id: 'ii1', themeId: 'Domestic Destructionism' },
+        { id: 'ii2', themeId: 'Domestic Destructionism' },
+        { id: 'i1', themeId: 'The Crayon Period' },
+      ];
+
+      expect(selectTopCanonicalMovements(artworks)).toEqual([
+        'Domestic Destructionism',
+        'Kinetic Scribblism',
+        'Monochrome Nihilism',
+      ]);
+    });
+
+    it('pads remaining slots with the earliest 0-count canonical phases for sparse collections and returns in chronological order', () => {
+      // Only Phase V = 3 and Phase IV = 1 have artworks; remaining slot filled by Phase I (0 count)
+      const artworks: gallery.IArtwork[] = [
+        { id: 'v1', themeId: 'Monochrome Nihilism' },
+        { id: 'v2', themeId: 'Monochrome Nihilism' },
+        { id: 'v3', themeId: 'Monochrome Nihilism' },
+        { id: 'iv1', themeId: 'Found Object Assemblage' },
+      ];
+
+      expect(selectTopCanonicalMovements(artworks)).toEqual([
+        'The Crayon Period',
+        'Found Object Assemblage',
+        'Monochrome Nihilism',
+      ]);
+    });
+
+    it('breaks ties at the selection boundary deterministically by canonical order (Phase I < II < III < IV < V)', () => {
+      // Phases II, III, IV, and V each have 2 artworks, Phase I has 0 -> Phases II, III, IV win over V
+      const artworks: gallery.IArtwork[] = [
+        { id: 'v1', themeId: 'Monochrome Nihilism' },
+        { id: 'v2', themeId: 'Monochrome Nihilism' },
+        { id: 'iv1', themeId: 'Found Object Assemblage' },
+        { id: 'iv2', themeId: 'Found Object Assemblage' },
+        { id: 'iii1', themeId: 'Kinetic Scribblism' },
+        { id: 'iii2', themeId: 'Kinetic Scribblism' },
+        { id: 'ii1', themeId: 'Domestic Destructionism' },
+        { id: 'ii2', themeId: 'Domestic Destructionism' },
+      ];
+
+      expect(selectTopCanonicalMovements(artworks)).toEqual([
+        'Domestic Destructionism',
+        'Kinetic Scribblism',
+        'Found Object Assemblage',
+      ]);
+    });
+
+    it('ignores non-canonical themes and "Early Works" (including missing, empty, or whitespace-only themes)', () => {
+      const artworks: gallery.IArtwork[] = [
+        { id: 'ew1', themeId: 'Early Works' },
+        { id: 'ew2', themeId: '' },
+        { id: 'ew3', themeId: '   ' },
+        { id: 'ew4', themeId: null },
+        { id: 'ew5' },
+        { id: 'custom1', themeId: 'Avant-Garde Experiments' },
+        { id: 'custom2', themeId: 'Avant-Garde Experiments' },
+        { id: 'custom3', themeId: 'Avant-Garde Experiments' },
+      ];
+
+      expect(selectTopCanonicalMovements(artworks)).toEqual([
+        'The Crayon Period',
+        'Domestic Destructionism',
+        'Kinetic Scribblism',
+      ]);
+    });
+
+    it('normalizes and accurately counts both theme and themeId properties with leading/trailing whitespace', () => {
+      const artworks: gallery.IArtwork[] = [
+        { id: '1', theme: '  Monochrome Nihilism  ' } as gallery.IArtwork,
+        { id: '2', themeId: '\tMonochrome Nihilism\n' },
+        { id: '3', theme: '  Found Object Assemblage ' } as gallery.IArtwork,
+        { id: '4', themeId: ' Found Object Assemblage' },
+        { id: '5', theme: ' Kinetic Scribblism ' } as gallery.IArtwork,
+      ];
+
+      expect(selectTopCanonicalMovements(artworks)).toEqual([
+        'Kinetic Scribblism',
+        'Found Object Assemblage',
+        'Monochrome Nihilism',
+      ]);
     });
   });
 });
