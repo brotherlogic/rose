@@ -298,3 +298,47 @@ export function selectRepresentativeArtwork(
 
   return candidates[0] || null;
 }
+
+/**
+ * Selects the top `limit` (default 3) most preponderant canonical movements
+ * from `CANONICAL_MOVEMENTS` based on normalized artwork theme counts.
+ * - Non-canonical themes and "Early Works" are ignored when ranking candidate phases.
+ * - Ties (including 0-count phases in empty or sparse collections) are broken by
+ *   canonical chronological order (Phase I -> Phase V).
+ * - The selected movements are returned in canonical chronological order (Phase I -> Phase V).
+ */
+export function selectTopCanonicalMovements(
+  artworks?: gallery.IArtwork[] | null,
+  limit: number = 3
+): string[] {
+  const clampedLimit = Math.max(0, Math.min(limit, CANONICAL_MOVEMENTS.length));
+  const counts = new Map<string, number>(
+    CANONICAL_MOVEMENTS.map((movement) => [movement, 0])
+  );
+
+  for (const artwork of artworks ?? []) {
+    const rawTheme = getArtworkTheme(artwork);
+    const normalized = normalizeTheme(rawTheme);
+    if (counts.has(normalized)) {
+      counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+    }
+  }
+
+  const candidates = CANONICAL_MOVEMENTS.map((name, index) => ({
+    name,
+    index,
+    count: counts.get(name) ?? 0,
+  }));
+
+  candidates.sort((a, b) => {
+    if (b.count !== a.count) {
+      return b.count - a.count;
+    }
+    return a.index - b.index;
+  });
+
+  return candidates
+    .slice(0, clampedLimit)
+    .sort((a, b) => a.index - b.index)
+    .map((entry) => entry.name);
+}
