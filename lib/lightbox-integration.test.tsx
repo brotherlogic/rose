@@ -167,8 +167,20 @@ describe('End-to-End Lightbox Verification Suite (#299)', () => {
         search: '?movement=The+Crayon+Period&sort=desc',
       },
       history: {
-        pushState: vi.fn(),
-        replaceState: vi.fn(),
+        pushState: vi.fn((_data: unknown, _unused: string, url?: string | URL | null) => {
+          if (typeof url === 'string') {
+            const parsed = new URL(url, 'http://localhost');
+            mockWin.location.pathname = parsed.pathname;
+            mockWin.location.search = parsed.search;
+          }
+        }),
+        replaceState: vi.fn((_data: unknown, _unused: string, url?: string | URL | null) => {
+          if (typeof url === 'string') {
+            const parsed = new URL(url, 'http://localhost');
+            mockWin.location.pathname = parsed.pathname;
+            mockWin.location.search = parsed.search;
+          }
+        }),
       },
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -538,46 +550,65 @@ describe('End-to-End Lightbox Verification Suite (#299)', () => {
     });
   });
 
-  describe('7. URL Immutability (window.location.search)', () => {
-    it('should guarantee window.location.search remains clean and unmutated across all modal operations', () => {
-      const initialSearch = '?movement=The+Crayon+Period&sort=desc';
+  describe('7. URL Synchronization (window.location.search & Browser History)', () => {
+    it('should synchronize ?artwork=<id> with pushState on open/close, replaceState on next/prev, and no history calls on plaque toggle', () => {
       const { result, unmount } = renderHook(() => useArtworkLightbox(sampleArtworks));
 
-      // 1. Open Lightbox
+      // 1. Open Lightbox -> pushState with ?artwork=art-001 (and cleans canonical default sort=desc)
       act(() => {
         result.current.openLightbox(0);
       });
-      expect(mockWin.location.search).toBe(initialSearch);
-      expect(mockWin.history.pushState).not.toHaveBeenCalled();
+      expect(mockWin.history.pushState).toHaveBeenCalledWith(
+        null,
+        '',
+        '/?movement=The+Crayon+Period&artwork=art-001'
+      );
       expect(mockWin.history.replaceState).not.toHaveBeenCalled();
+      expect(mockWin.location.search).toBe('?movement=The+Crayon+Period&artwork=art-001');
 
-      // 2. Next Artwork
+      // 2. Next Artwork -> replaceState with ?artwork=art-002
       act(() => {
         result.current.nextArtwork();
       });
-      expect(mockWin.location.search).toBe(initialSearch);
-      expect(mockWin.history.pushState).not.toHaveBeenCalled();
+      expect(mockWin.history.pushState).toHaveBeenCalledTimes(1);
+      expect(mockWin.history.replaceState).toHaveBeenCalledWith(
+        null,
+        '',
+        '/?movement=The+Crayon+Period&artwork=art-002'
+      );
+      expect(mockWin.location.search).toBe('?movement=The+Crayon+Period&artwork=art-002');
 
-      // 3. Toggle Plaque
+      // 3. Toggle Plaque -> no history calls or URL mutation
+      vi.clearAllMocks();
       act(() => {
         result.current.togglePlaque();
       });
-      expect(mockWin.location.search).toBe(initialSearch);
+      expect(mockWin.location.search).toBe('?movement=The+Crayon+Period&artwork=art-002');
       expect(mockWin.history.pushState).not.toHaveBeenCalled();
+      expect(mockWin.history.replaceState).not.toHaveBeenCalled();
 
-      // 4. Previous Artwork
+      // 4. Previous Artwork -> replaceState with ?artwork=art-001
       act(() => {
         result.current.prevArtwork();
       });
-      expect(mockWin.location.search).toBe(initialSearch);
+      expect(mockWin.history.pushState).not.toHaveBeenCalled();
+      expect(mockWin.history.replaceState).toHaveBeenCalledWith(
+        null,
+        '',
+        '/?movement=The+Crayon+Period&artwork=art-001'
+      );
+      expect(mockWin.location.search).toBe('?movement=The+Crayon+Period&artwork=art-001');
 
-      // 5. Close Lightbox
+      // 5. Close Lightbox -> pushState removing artwork while preserving movement
       act(() => {
         result.current.closeLightbox();
       });
-      expect(mockWin.location.search).toBe(initialSearch);
-      expect(mockWin.history.pushState).not.toHaveBeenCalled();
-      expect(mockWin.history.replaceState).not.toHaveBeenCalled();
+      expect(mockWin.history.pushState).toHaveBeenCalledWith(
+        null,
+        '',
+        '/?movement=The+Crayon+Period'
+      );
+      expect(mockWin.location.search).toBe('?movement=The+Crayon+Period');
 
       unmount();
     });

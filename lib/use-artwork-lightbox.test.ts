@@ -82,17 +82,45 @@ describe('useArtworkLightbox Hook Suite (#296)', () => {
   ];
 
   beforeEach(() => {
+    const listeners: Record<string, ((event: Event) => void)[]> = {};
+
     const mockWin = {
       location: {
         pathname: '/',
         search: '?movement=the-crayon-period',
       },
       history: {
-        pushState: vi.fn(),
-        replaceState: vi.fn(),
+        pushState: vi.fn((_data: unknown, _unused: string, url?: string | URL | null) => {
+          if (typeof url === 'string') {
+            const parsed = new URL(url, 'http://localhost');
+            mockWin.location.pathname = parsed.pathname;
+            mockWin.location.search = parsed.search;
+          }
+        }),
+        replaceState: vi.fn((_data: unknown, _unused: string, url?: string | URL | null) => {
+          if (typeof url === 'string') {
+            const parsed = new URL(url, 'http://localhost');
+            mockWin.location.pathname = parsed.pathname;
+            mockWin.location.search = parsed.search;
+          }
+        }),
       },
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
+      addEventListener: vi.fn((event: string, fn: (event: Event) => void) => {
+        listeners[event] = listeners[event] || [];
+        listeners[event].push(fn);
+      }),
+      removeEventListener: vi.fn((event: string, fn: (event: Event) => void) => {
+        if (listeners[event]) {
+          listeners[event] = listeners[event].filter((f) => f !== fn);
+        }
+      }),
+      dispatchEvent: vi.fn((event: Event) => {
+        if (listeners[event.type]) {
+          listeners[event.type].forEach((fn) => fn(event));
+          return true;
+        }
+        return false;
+      }),
       HTMLIFrameElement: function () {},
     };
 
@@ -363,25 +391,240 @@ describe('useArtworkLightbox Hook Suite (#296)', () => {
     });
   });
 
-  describe('Pure In-Memory State & URL Isolation', () => {
-    it('should strictly leave window.location.search unmutated and avoid history pushState calls', () => {
+  describe('URL Synchronization, Browser History & Deep-Linking', () => {
+    it('should call window.history.pushState with ?artwork=<id> on openLightbox while preserving movement and sort=asc', () => {
+      window.location.search = '?movement=the-crayon-period&sort=asc';
       const { result, unmount } = renderHook(() => useArtworkLightbox(mockArtworks));
-
-      expect(window.location.search).toBe('?movement=the-crayon-period');
 
       act(() => {
         result.current.openLightbox(1);
-        result.current.nextArtwork();
-        result.current.togglePlaque();
-        result.current.prevArtwork();
-        result.current.closeLightbox();
       });
 
-      expect(window.location.search).toBe('?movement=the-crayon-period');
+      expect(result.current.activeIndex).toBe(1);
+      expect(window.history.pushState).toHaveBeenCalledWith(
+        null,
+        '',
+        '/?movement=the-crayon-period&sort=asc&artwork=art-002'
+      );
+      expect(window.location.search).toBe('?movement=the-crayon-period&sort=asc&artwork=art-002');
+
+      unmount();
+    });
+
+    it('should call window.history.replaceState on nextArtwork and prevArtwork without calling pushState, and skip duplicate calls on single-item collections', () => {
+      const { result, unmount } = renderHook(() => useArtworkLightbox(mockArtworks));
+
+      act(() => {
+        result.current.openLightbox(0);
+      });
+      expect(window.history.pushState).toHaveBeenCalledTimes(1);
+      expect(window.history.replaceState).not.toHaveBeenCalled();
+
+      act(() => {
+        result.current.nextArtwork();
+      });
+      expect(result.current.activeIndex).toBe(1);
+      expect(window.history.pushState).toHaveBeenCalledTimes(1);
+      expect(window.history.replaceState).toHaveBeenCalledWith(
+        null,
+        '',
+        '/?movement=the-crayon-period&artwork=art-002'
+      );
+
+      act(() => {
+        result.current.prevArtwork();
+      });
+      expect(result.current.activeIndex).toBe(0);
+      expect(window.history.pushState).toHaveBeenCalledTimes(1);
+      expect(window.history.replaceState).toHaveBeenCalledWith(
+        null,
+        '',
+        '/?movement=the-crayon-period&artwork=art-001'
+      );
+
+      unmount();
+
+      // Single-item collection should not call replaceState or pushState on next/prev
+      vi.clearAllMocks();
+      window.location.search = '';
+      const singleCollection = [mockArtworks[0]];
+      const singleHook = renderHook(() => useArtworkLightbox(singleCollection));
+
+      act(() => {
+        singleHook.result.current.openLightbox(0);
+      });
+      expect(window.history.pushState).toHaveBeenCalledTimes(1);
+      expect(window.history.replaceState).not.toHaveBeenCalled();
+
+      act(() => {
+        singleHook.result.current.nextArtwork();
+        singleHook.result.current.prevArtwork();
+      });
+      expect(singleHook.result.current.activeIndex).toBe(0);
+      expect(window.history.pushState).toHaveBeenCalledTimes(1);
+      expect(window.history.replaceState).not.toHaveBeenCalled();
+
+      singleHook.unmount();
+    });
+
+    it('should remove artwork from URL via window.history.pushState on closeLightbox while preserving movement and sort', () => {
+      window.location.search = '?movement=the-crayon-period&sort=asc';
+      const { result, unmount } = renderHook(() => useArtworkLightbox(mockArtworks));
+
+      act(() => {
+        result.current.openLightbox(2);
+      });
+      expect(window.location.search).toBe('?movement=the-crayon-period&sort=asc&artwork=art-003');
+
+      act(() => {
+        result.current.closeLightbox();
+      });
+      expect(result.current.activeIndex).toBeNull();
+      expect(window.history.pushState).toHaveBeenLastCalledWith(
+        null,
+        '',
+        '/?movement=the-crayon-period&sort=asc'
+      );
+      expect(window.location.search).toBe('?movement=the-crayon-period&sort=asc');
+
+      unmount();
+    });
+
+    it('should never mutate window.location.search or call pushState/replaceState on togglePlaque', () => {
+      const { result, unmount } = renderHook(() => useArtworkLightbox(mockArtworks));
+
+      act(() => {
+        result.current.openLightbox(0);
+      });
+      const searchAfterOpen = window.location.search;
+      vi.clearAllMocks();
+
+      act(() => {
+        result.current.togglePlaque();
+      });
+      expect(result.current.isPlaqueCollapsed).toBe(true);
+      expect(window.location.search).toBe(searchAfterOpen);
+      expect(window.history.pushState).not.toHaveBeenCalled();
+      expect(window.history.replaceState).not.toHaveBeenCalled();
+
+      act(() => {
+        result.current.togglePlaque();
+      });
+      expect(result.current.isPlaqueCollapsed).toBe(false);
+      expect(window.location.search).toBe(searchAfterOpen);
       expect(window.history.pushState).not.toHaveBeenCalled();
       expect(window.history.replaceState).not.toHaveBeenCalled();
 
       unmount();
+    });
+
+    it('should synchronize with browser popstate events to close and re-open lightbox', () => {
+      const focusSpy = vi.fn();
+      const mockTrigger = { focus: focusSpy } as unknown as HTMLElement;
+      const { result, unmount } = renderHook(() => useArtworkLightbox(mockArtworks));
+
+      act(() => {
+        result.current.openLightbox(0, mockTrigger);
+      });
+      expect(result.current.activeIndex).toBe(0);
+
+      // Simulate Browser Back to grid URL without ?artwork=
+      window.location.search = '?movement=the-crayon-period';
+      act(() => {
+        window.dispatchEvent(new Event('popstate'));
+      });
+      expect(result.current.activeIndex).toBeNull();
+      expect(focusSpy).toHaveBeenCalledTimes(1);
+
+      // Simulate Browser Forward to URL with ?artwork=art-003
+      window.location.search = '?movement=the-crayon-period&artwork=art-003';
+      act(() => {
+        window.dispatchEvent(new Event('popstate'));
+      });
+      expect(result.current.activeIndex).toBe(2);
+
+      unmount();
+    });
+
+    it('should open matching artwork with isPlaqueCollapsed false on deep-link mount', () => {
+      window.location.search = '?movement=domestic-destructionism&artwork=art-002';
+      const { result, unmount } = renderHook(() => useArtworkLightbox(mockArtworks));
+
+      expect(result.current.activeIndex).toBe(1);
+      expect(result.current.isPlaqueCollapsed).toBe(false);
+
+      unmount();
+    });
+
+    it('should invoke onClearMovementFilter and strip movement via replaceState when deep-linked artwork is in catalogArtworks but excluded from artworks', () => {
+      window.location.search = '?movement=the-crayon-period&sort=asc&artwork=art-002';
+      const filteredArtworks = [mockArtworks[0], mockArtworks[2]]; // excludes art-002
+      const onClearMovementFilter = vi.fn();
+
+      const { result, unmount } = renderHook(() =>
+        useArtworkLightbox(filteredArtworks, {
+          catalogArtworks: mockArtworks,
+          isCatalogReady: true,
+          onClearMovementFilter,
+        })
+      );
+
+      expect(result.current.activeIndex).toBeNull();
+      expect(onClearMovementFilter).toHaveBeenCalledTimes(1);
+      expect(window.history.replaceState).toHaveBeenCalledWith(
+        null,
+        '',
+        '/?sort=asc&artwork=art-002'
+      );
+
+      unmount();
+    });
+
+    it('should wait while isCatalogReady is false, then strip invalid or empty ?artwork= parameter via replaceState once isCatalogReady is true', () => {
+      window.location.search = '?movement=the-crayon-period&artwork=nonexistent';
+      let isReady = false;
+      let currentArtworks: gallery.IArtwork[] = [];
+
+      const { result, rerender, unmount } = renderHook(() =>
+        useArtworkLightbox(currentArtworks, {
+          catalogArtworks: currentArtworks,
+          isCatalogReady: isReady,
+        })
+      );
+
+      // While pending async hydration, do not strip ?artwork=
+      expect(result.current.activeIndex).toBeNull();
+      expect(window.history.replaceState).not.toHaveBeenCalled();
+      expect(window.location.search).toBe('?movement=the-crayon-period&artwork=nonexistent');
+
+      // Once catalog hydration settles, strip unknown ?artwork=nonexistent
+      isReady = true;
+      currentArtworks = mockArtworks;
+      rerender();
+
+      expect(result.current.activeIndex).toBeNull();
+      expect(window.history.replaceState).toHaveBeenCalledWith(
+        null,
+        '',
+        '/?movement=the-crayon-period'
+      );
+      expect(window.location.search).toBe('?movement=the-crayon-period');
+
+      unmount();
+
+      // Also verify empty ?artwork= is stripped when ready
+      vi.clearAllMocks();
+      window.location.search = '?artwork=';
+      const emptyParamHook = renderHook(() =>
+        useArtworkLightbox(mockArtworks, {
+          catalogArtworks: mockArtworks,
+          isCatalogReady: true,
+        })
+      );
+      expect(emptyParamHook.result.current.activeIndex).toBeNull();
+      expect(window.history.replaceState).toHaveBeenCalledWith(null, '', '/');
+      expect(window.location.search).toBe('');
+      emptyParamHook.unmount();
     });
   });
 });
