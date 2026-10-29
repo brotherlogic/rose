@@ -19,11 +19,19 @@ export default function CuratedGalleryCollection({
   artworks,
 }: CuratedGalleryCollectionProps) {
   let catalogArtworks = artworks;
+  let isHydrated = false;
+  let isCatalogReady: boolean | undefined;
   try {
-    catalogArtworks = useGalleryCatalog(artworks).artworks;
+    const catalogState = useGalleryCatalog(artworks);
+    catalogArtworks = catalogState.artworks;
+    isHydrated = catalogState.isHydrated;
+    isCatalogReady = catalogState.isCatalogReady;
   } catch {
     catalogArtworks = artworks;
+    isHydrated = false;
+    isCatalogReady = undefined;
   }
+  const catalogReady = isCatalogReady ?? (isHydrated || catalogArtworks.length > 0);
   const totalCount = catalogArtworks.length;
   const {
     selectedMovement,
@@ -31,7 +39,10 @@ export default function CuratedGalleryCollection({
     setMovement,
     setSortDirection,
     resetFilter,
+    clearMovementFilter,
   } = useGalleryFilter();
+
+  const onClearMovementFilter = clearMovementFilter ?? (() => setMovement(null));
 
   const filteredArtworks = totalCount === 0
     ? []
@@ -45,7 +56,11 @@ export default function CuratedGalleryCollection({
     nextArtwork,
     prevArtwork,
     togglePlaque,
-  } = useArtworkLightbox(filteredArtworks);
+  } = useArtworkLightbox(filteredArtworks, {
+    catalogArtworks,
+    isCatalogReady: catalogReady,
+    onClearMovementFilter,
+  });
 
   if (totalCount === 0) {
     return (
