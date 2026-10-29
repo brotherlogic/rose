@@ -91,15 +91,52 @@ describe('Editorial Gallery & Museum Shell Integration Suite (#255)', () => {
       expect(markup).toContain('id="collection"');
     });
 
-    it('should render all 5 canonical biography movements on homepage', () => {
+    it('should render top 3 canonical biography movements on homepage and keep all catalog movements filterable', () => {
       mockGetArtworks.mockReturnValue([]);
-      const markup = renderToStaticMarkup(React.createElement(Home));
+      const emptyMarkup = renderToStaticMarkup(React.createElement(Home));
 
-      expect(markup).toContain('The Crayon Period');
-      expect(markup).toContain('Domestic Destructionism');
-      expect(markup).toContain('Kinetic Scribblism');
-      expect(markup).toContain('Found Object Assemblage');
-      expect(markup).toContain('Monochrome Nihilism');
+      expect(emptyMarkup).toContain('The Crayon Period');
+      expect(emptyMarkup).toContain('Domestic Destructionism');
+      expect(emptyMarkup).toContain('Kinetic Scribblism');
+      expect(emptyMarkup).not.toContain('Found Object Assemblage');
+      expect(emptyMarkup).not.toContain('Monochrome Nihilism');
+
+      mockGetArtworks.mockReturnValue([
+        { id: '1', title: 'W1', theme: 'Monochrome Nihilism' },
+        { id: '2', title: 'W2', theme: 'Monochrome Nihilism' },
+        { id: '3', title: 'W3', theme: 'Found Object Assemblage' },
+        { id: '4', title: 'W4', theme: 'Found Object Assemblage' },
+        { id: '5', title: 'W5', theme: 'Domestic Destructionism' },
+        { id: '6', title: 'W6', theme: 'Domestic Destructionism' },
+        { id: '7', title: 'W7', theme: 'The Crayon Period' },
+      ]);
+      const populatedMarkup = renderToStaticMarkup(React.createElement(Home));
+      const biographySection = populatedMarkup.slice(
+        populatedMarkup.indexOf('id="biography"'),
+        populatedMarkup.indexOf('id="collection"')
+      );
+      const collectionSection = populatedMarkup.slice(
+        populatedMarkup.indexOf('id="collection"')
+      );
+
+      // Biography section highlights only the top 3 phases in canonical order (Phases II, IV, V)
+      expect(biographySection).toContain('Domestic Destructionism');
+      expect(biographySection).toContain('Found Object Assemblage');
+      expect(biographySection).toContain('Monochrome Nihilism');
+      expect(biographySection).not.toContain('The Crayon Period');
+      expect(biographySection).not.toContain('Kinetic Scribblism');
+
+      const idxII = biographySection.indexOf('Domestic Destructionism');
+      const idxIV = biographySection.indexOf('Found Object Assemblage');
+      const idxV = biographySection.indexOf('Monochrome Nihilism');
+      expect(idxII).toBeLessThan(idxIV);
+      expect(idxIV).toBeLessThan(idxV);
+
+      // ExhibitionFilterBar in #collection retains all movements present in the catalog
+      expect(collectionSection).toContain('The Crayon Period (1)');
+      expect(collectionSection).toContain('Domestic Destructionism (2)');
+      expect(collectionSection).toContain('Found Object Assemblage (2)');
+      expect(collectionSection).toContain('Monochrome Nihilism (2)');
     });
 
     it('should render the austere, museum-grade empty state card when artworks.length === 0', () => {
